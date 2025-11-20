@@ -165,3 +165,39 @@ options:
     ------------------------------------------------------------------------------------
     ```
     
+### `download_plots.py`
+* Automate downloading of CMS OMS fill reports.
+* Features:
+    - Fetches fill metadata (bunch count, collision system, year) from OMS API.
+    - Injects metadata into the webpage title before taking a screenshot.
+    - Saves screenshots with informative filenames: `fill_<number>_<system>_<bunches>b_<year>.png`.
+    - Supports input from command line arguments or a text file.
+    - Handles CERN SSO login (pauses for manual login).
+
+```
+usage: download_plots.py [-h] [fill_numbers_or_file ...]
+
+Download OMS fill report plots.
+
+positional arguments:
+  fill_numbers_or_file  Fill numbers (space separated) or a filename containing fill numbers.
+```
+
+* Example 1 (Command Line)
+    ```bash
+    python3 download_plots.py 11316 11318
+    ```
+
+* Example 2 (File Input)
+    ```bash
+    python3 download_plots.py fills.txt
+    ```
+    * `fills.txt` content example:
+        ```
+        11316 # PbPb run
+        11318
+        ```
+
+* Output
+    - Creates a `fills/` directory.
+    - Saves screenshots like `fills/fill_11316_PbPb_1032b_2023.png`.

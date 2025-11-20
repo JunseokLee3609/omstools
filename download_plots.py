@@ -134,24 +134,30 @@ def download_plots(fill_numbers):
             
             # Inject Metadata into Page Title (Visual)
             if meta:
-                new_title = f"Fill {fill_number} {meta_str}"
+                # User requested Fill and Bunch count in the title
+                # Format: Fill 12345 Bunches 2400 (pp 2024)
+                new_title = f"Fill {fill_number} Bunches {meta['bunches']} ({meta['system']} {meta['year']})"
+                
                 script = f"""
                 var titleEl = document.querySelector('h3') || document.querySelector('h1');
                 if (titleEl) {{
-                    titleEl.textContent = '{new_title} ' + titleEl.textContent;
-                    titleEl.style.color = 'red';
+                    // Prepend the new info to the existing title
+                    titleEl.textContent = '{new_title} | ' + titleEl.textContent;
+                    titleEl.style.color = '#d32f2f'; // Red color
                     titleEl.style.fontWeight = 'bold';
+                    titleEl.style.fontSize = '1.5em';
                 }}
                 """
                 try:
                     driver.execute_script(script)
-                    print("Updated page title with metadata.")
+                    print(f"Updated page title to: {new_title}")
                 except Exception as e:
                     print(f"Could not update page title: {e}")
             
             filename_suffix = ""
             if meta:
-                filename_suffix = f"_{meta['year']}_{meta['system']}_{meta['bunches']}b"
+                # Format: fill_12345_pp_2400b_2024.png
+                filename_suffix = f"_{meta['system']}_{meta['bunches']}b_{meta['year']}"
             
             filename = os.path.join(output_dir, f"fill_{fill_number}{filename_suffix}.png")
             driver.save_screenshot(filename)
