@@ -1,5 +1,10 @@
 fills/
 __pycache__/
-.DS_Store
+*.py[cod]
 .venv/
+venv/
+outcsv/
+figs/
+.DS_Store
+.env
 env.py

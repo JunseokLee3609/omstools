@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="OMS L1 Rate Dashboard — Monitor L1 rates and Heavy Ion bunch projection." />
+    <title>OMS L1 Rate Dashboard</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📊</text></svg>"
+      type="image/svg+xml"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <link rel="stylesheet" href="/static/styles.css?v=48" />
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <i class="fa-solid fa-chart-line brand-mark"></i>
+        <div>
+          <h1>OMS L1 Toolkit</h1>
+          <p>Rate operations</p>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Dashboard pages">
+        <button class="nav-item active" data-page="dashboard" data-title="Dashboard">
+          <i class="fa-solid fa-house"></i><span>Dashboard</span>
+        </button>
+        <button class="nav-item" data-page="projection" data-title="Bunch Projection">
+          <i class="fa-solid fa-chart-line"></i><span>Bunch Projection</span>
+        </button>
+        <button class="nav-item" data-page="table" data-title="L1 Prescale Table">
+          <i class="fa-solid fa-table"></i><span>L1 Prescale Table</span>
+        </button>
+        <button class="nav-item" data-page="monitoring" data-title="Monitoring Seeds">
+          <i class="fa-solid fa-list-check"></i><span>Monitoring Seeds</span>
+        </button>
+        <button class="nav-item" data-page="exports" data-title="CSV Exports">
+          <i class="fa-solid fa-file-csv"></i><span>CSV Exports</span>
+        </button>
+        <button class="nav-item" data-page="settings" data-title="Settings">
+          <i class="fa-solid fa-gear"></i><span>Settings</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-section">
+        <label for="trigger-file">Seed selection</label>
+        <input id="trigger-file" type="text" placeholder="ALL or examples/MuonTriggers.txt" />
+        <div class="seed-preset-row">
+          <button id="seed-all" class="preset-button" type="button">All L1</button>
+          <button id="seed-monitoring" class="preset-button active" type="button">Monitoring</button>
+        </div>
+        <p class="field-hint">Applies to Dashboard, Bunch Projection, and L1 Prescale Table. Rate plots below Bunch Projection always use Monitoring seeds.</p>
+      </div>
+
+      <div class="sidebar-section">
+        <label for="rate-field">L1 rate field</label>
+        <select id="rate-field"></select>
+      </div>
+
+      <div class="sidebar-section split">
+        <div>
+          <span class="mini-label">Refresh</span>
+          <strong id="refresh-label">30s</strong>
+        </div>
+        <button id="refresh-now" class="ghost-button" type="button">Refresh</button>
+      </div>
+    </aside>
+
+    <main class="shell">
+      <header class="topbar">
+        <div class="topbar-title">
+          <button
+            id="sidebar-toggle"
+            class="back-button"
+            type="button"
+            title="Collapse menu"
+            aria-label="Collapse menu"
+            aria-expanded="true"
+          >
+            <i class="fa-solid fa-angles-left"></i>
+          </button>
+          <strong id="topbar-page-title">Dashboard</strong>
+        </div>
+        <button id="topbar-refresh" class="primary-button" type="button">
+          <i class="fa-solid fa-rotate"></i>
+          Refresh
+        </button>
+      </header>
+      <div id="global-progress" class="global-progress" aria-hidden="true">
+        <div class="global-progress-bar"></div>
+      </div>
+      <div id="busy-overlay" class="busy-overlay" aria-hidden="true">
+        <div class="busy-card">
+          <span class="busy-spinner" aria-hidden="true"></span>
+          <div>
+            <strong id="busy-title">Working...</strong>
+            <span id="busy-subtitle">OMS request is running.</span>
+          </div>
+        </div>
+      </div>
+
+      <section id="page-dashboard" class="page active">
+        <header class="hero">
+          <div>
+            <div class="eyebrow">Current GLOBAL-RUN</div>
+            <h2>OMS L1 Rate Dashboard</h2>
+            <p>Live run status, selected L1 seed rates, and recent LS evolution.</p>
+          </div>
+          <div class="hero-status">
+            <span id="live-badge" class="badge neutral">WAITING</span>
+            <span id="last-updated" class="timestamp">not loaded</span>
+          </div>
+        </header>
+
+        <section class="metric-grid" id="run-metrics"></section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Selected L1 Seeds</h3>
+              <p id="trigger-summary">No trigger file loaded yet.</p>
+            </div>
+            <div class="panel-actions">
+              <button id="load-rates" class="shell-button" type="button">Load rates</button>
+              <div class="inline-control">
+                <label for="ls-window">Recent LS</label>
+                <input id="ls-window" type="number" min="1" value="20" />
+              </div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Seed</th>
+                  <th>LS window</th>
+                  <th>Points</th>
+                  <th>Rate [Hz]</th>
+                  <th>Init lumi</th>
+                  <th>Stable</th>
+                </tr>
+              </thead>
+              <tbody id="latest-rates"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="page-projection" class="page">
+        <header class="hero compact">
+          <div>
+            <div class="eyebrow">Reference scaling</div>
+            <h2>Bunch Projection</h2>
+            <p>Spreadsheet-style comparison using LS-level inst lumi from the reference and comparison runs.</p>
+          </div>
+          <span class="badge blue">LUMI BASE</span>
+        </header>
+
+        <section class="panel projection-controls">
+          <div class="projection-control-grid">
+            <section class="projection-block">
+              <h3>Reference</h3>
+              <div class="form-grid compact">
+                <label>Run<input id="reference-run" type="number" value="387892" min="1" /></label>
+                <label>Type
+                  <select id="reference-lumi-mode" data-lumi-group="reference">
+                    <option value="range">Lumi range</option>
+                    <option value="single">Specific LS</option>
+                    <option value="hardcoded">Hardcoded lumi</option>
+                  </select>
+                </label>
+                <label data-mode-for="reference" data-modes="range hardcoded">LS min<input id="reference-ls-min" type="number" value="100" min="1" /></label>
+                <label data-mode-for="reference" data-modes="range hardcoded">LS max<input id="reference-ls-max" type="number" value="200" min="1" /></label>
+                <label data-mode-for="reference" data-modes="single">Specific LS<input id="reference-single-ls" type="number" value="100" min="1" /></label>
+                <label data-mode-for="reference" data-modes="hardcoded">Hardcoded init lumi<input id="reference-hardcoded-lumi" type="number" value="0" min="0" step="any" /></label>
+              </div>
+            </section>
+
+            <section class="projection-block">
+              <h3>Comparison Builder</h3>
+              <div class="form-grid compact">
+                <label>Run<input id="comparison-run" type="number" min="1" placeholder="auto" /></label>
+                <label>Type
+                  <select id="current-lumi-mode" data-lumi-group="current">
+                    <option value="latest_window">Latest LS window</option>
+                    <option value="range">Lumi range</option>
+                    <option value="single">Specific LS</option>
+                    <option value="hardcoded">Hardcoded lumi</option>
+                  </select>
+                </label>
+                <label data-mode-for="current" data-modes="latest_window">LS window<input id="current-ls-window" type="number" value="20" min="1" /></label>
+                <label data-mode-for="current" data-modes="range hardcoded">LS min<input id="current-ls-min" type="number" value="1" min="1" /></label>
+                <label data-mode-for="current" data-modes="range hardcoded">LS max<input id="current-ls-max" type="number" value="20" min="1" /></label>
+                <label data-mode-for="current" data-modes="single">Specific LS<input id="current-single-ls" type="number" value="1" min="1" /></label>
+                <label data-mode-for="current" data-modes="hardcoded">Hardcoded init lumi<input id="current-hardcoded-lumi" type="number" value="0" min="0" step="any" /></label>
+                <div class="projection-action-row">
+                  <label class="check-control form-check">
+                    <input id="comparison-include-unstable" type="checkbox" checked />
+                    Include unstable LS
+                  </label>
+                  <button id="add-comparison" class="shell-button" type="button">
+                    <i class="fa-solid fa-plus"></i>
+                    Add comparison
+                  </button>
+                </div>
+              </div>
+              <div id="comparison-list" class="comparison-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="context-strip" id="projection-context" hidden></section>
+        <section class="context-strip" id="export-links" hidden></section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Latest Projection Ratio</h3>
+              <p>Spreadsheet-style projection, measured rate, ratio, and double ratio.</p>
+            </div>
+            <div class="plot-controls">
+              <button id="run-projection" class="primary-button compact-action" type="button">Run projection</button>
+              <label class="inline-control">
+                <span>Y axis</span>
+                <select id="projection-y-metric">
+                  <option value="ratio">Ratio</option>
+                  <option value="rate">Measured rate</option>
+                  <option value="expected_rate">Projection</option>
+                  <option value="deviation">Deviation</option>
+                  <option value="deviation_pct">Deviation %</option>
+                  <option value="lumi_ratio">Lumi ratio</option>
+                </select>
+              </label>
+              <label class="check-control">
+                <input id="projection-valid-only" type="checkbox" checked />
+                Overlayable only
+              </label>
+              <button id="export-latest-csv" class="shell-button" type="button">Export CSV</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <div id="comparison-result-tabs" class="comparison-result-tabs"></div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Seed</th>
+                  <th>LS</th>
+                  <th>Points</th>
+                  <th>Bit</th>
+                  <th>Projection</th>
+                  <th>Measured</th>
+                  <th>Ref lumi</th>
+                  <th>Comp lumi</th>
+                  <th>Lumi ratio</th>
+                  <th>Ratio</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="projection-latest"></tbody>
+            </table>
+          </div>
+          <div id="deviation-chart" class="chart"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Reference/Comparison Rate Plots</h3>
+              <p>Uses the Reference plus every added comparison above. Seeds are fixed to the Monitoring seed list.</p>
+            </div>
+            <div class="monitoring-actions">
+              <button id="run-rate-plots" class="primary-button" type="button">Draw plots</button>
+            </div>
+          </div>
+          <div id="rate-plot-grid" class="rate-plot-grid">
+            <div class="seed-empty">Click Draw plots.</div>
+          </div>
+        </section>
+      </section>
+
+      <section id="page-table" class="page">
+        <header class="hero compact">
+          <div>
+            <div class="eyebrow">Run configuration</div>
+            <h2>L1 Prescale Table</h2>
+            <p>Adopted L1 key, initial prescale index, and seed-level prescale view for a run.</p>
+          </div>
+          <button id="load-l1-prescale-table" class="primary-button" type="button">Load prescale table</button>
+        </header>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Adopted Prescale Table</h3>
+              <p id="l1-prescale-summary">Choose a run and load the adopted L1 prescale table.</p>
+            </div>
+            <div class="panel-actions">
+              <label class="inline-control">
+                <span>Run</span>
+                <input id="l1-table-run" type="number" min="1" placeholder="auto" />
+              </label>
+              <label class="inline-control">
+                <span>Filter</span>
+                <input id="l1-table-filter" type="text" placeholder="seed name" />
+              </label>
+              <label class="check-control">
+                <input id="l1-prescale-monitoring-only" type="checkbox" checked />
+                Monitoring seeds only
+              </label>
+            </div>
+          </div>
+          <div class="context-strip inline-context" id="l1-prescale-context"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Bit</th>
+                  <th>Seed</th>
+                  <th>Inferred PS</th>
+                  <th>Pre-DT before PS [Hz]</th>
+                  <th>Pre-DT after PS [Hz]</th>
+                  <th>Post-DT [Hz]</th>
+                  <th>Post-DT HLT [Hz]</th>
+                </tr>
+              </thead>
+              <tbody id="l1-prescale-table"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="page-exports" class="page">
+        <header class="hero compact">
+          <div>
+            <div class="eyebrow">Saved outputs</div>
+            <h2>CSV Exports</h2>
+            <p>Projection CSV files saved on the server for later inspection.</p>
+          </div>
+          <button id="refresh-exports" class="shell-button" type="button">Refresh list</button>
+        </header>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Saved CSV Files</h3>
+              <p id="export-dir-label">No export directory loaded yet.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Filename</th>
+                  <th>Modified</th>
+                  <th>Size</th>
+                  <th>Download</th>
+                </tr>
+              </thead>
+              <tbody id="exports-table"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="page-monitoring" class="page">
+        <header class="hero compact">
+          <div>
+            <div class="eyebrow">Seed list editor</div>
+            <h2>Monitoring Seeds</h2>
+            <p>Add or remove seeds used by the Monitoring preset.</p>
+          </div>
+          <button id="monitoring-use" class="shell-button" type="button">Use Monitoring</button>
+        </header>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Monitoring Seed File</h3>
+              <p id="monitoring-seed-path">No file loaded yet.</p>
+            </div>
+            <div class="monitoring-actions">
+              <button id="monitoring-reload" class="shell-button" type="button">Reload</button>
+              <button id="monitoring-save" class="primary-button" type="button">Save</button>
+            </div>
+          </div>
+          <div class="seed-add-row">
+            <input id="monitoring-new-seed" type="text" placeholder="Add seed from available list only" />
+            <button id="monitoring-add" class="primary-button" type="button">Add Seed</button>
+          </div>
+          <div class="monitoring-transfer">
+            <div class="seed-list-panel">
+              <div class="seed-list-head">
+                <strong id="available-seed-count">0 seeds</strong>
+                <span>Available L1 seeds</span>
+              </div>
+              <input id="available-seed-filter" class="seed-filter" type="text" placeholder="Filter available seeds" />
+              <div id="available-seed-list" class="seed-list selectable"></div>
+            </div>
+
+            <div class="transfer-buttons">
+              <button id="move-to-monitoring" class="primary-button" type="button" title="Add selected seeds">+</button>
+              <button id="remove-from-monitoring" class="shell-button" type="button" title="Remove selected seeds">-</button>
+            </div>
+
+            <div class="seed-list-panel">
+              <div class="seed-list-head">
+                <strong id="monitoring-seed-count">0 seeds</strong>
+                <span>Monitoring seeds</span>
+              </div>
+              <input id="monitoring-seed-filter" class="seed-filter" type="text" placeholder="Filter monitoring seeds" />
+              <div id="monitoring-seed-list" class="seed-list selectable"></div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section id="page-settings" class="page">
+        <header class="hero compact">
+          <div>
+            <div class="eyebrow">Local controls</div>
+            <h2>Settings</h2>
+            <p>Frontend defaults and runtime state.</p>
+          </div>
+          <span class="badge blue">CONFIG</span>
+        </header>
+        <section class="panel">
+          <div class="settings-grid">
+            <label>Refresh interval [s]<input id="refresh-seconds" type="number" min="5" value="30" /></label>
+            <button id="clear-state" class="ghost-button" type="button">Clear projection state</button>
+          </div>
+          <pre id="config-json" class="code-block"></pre>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js?v=48"></script>
+  </body>
+</html>
