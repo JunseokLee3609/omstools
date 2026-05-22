@@ -1,11 +1,7 @@
-python-dotenv
 --extra-index-url https://gitlab.cern.ch/api/v4/projects/45046/packages/pypi/simple
-omsapi
 Flask
-matplotlib
 numpy
 pandas
-plotly
-streamlit
+omsapi
 requests
 tsgauth==0.10.2
