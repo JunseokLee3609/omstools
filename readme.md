@@ -2,6 +2,7 @@
 
 * [Install](#install)
 * [Usage](#usage)
+    - [Web dashboard](#web-dashboard): OMS L1 rate dashboard and bunch projection viewer
     - [ratevsls.py](#ratevsls): Draw rate vs inst lumi
     - [hltcount.py](#hltcountpy): HLT counts in given lumi section ranges of time range
     - [ratetable.py](#ratetablepy): HLT/L1 rates/counts comparison between run or lumi sections
@@ -33,6 +34,46 @@ CLIENT_SECRET = 'example_secret'
 ```
 
 ## Usage
+### Web dashboard
+The Flask web dashboard can be used after cloning the repository, installing the web dependencies, and creating a local `env.py` with OMS credentials.
+
+```bash
+git clone git@github.com:JunseokLee3609/omstools.git
+cd omstools
+
+python3.11 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements-web.txt
+
+cp env.example.py env.py
+```
+
+Edit `env.py` and fill in your own OMS credentials:
+
+```python
+CLIENT_ID = "your_oms_client_id"
+CLIENT_SECRET = "your_oms_client_secret"
+```
+
+Run locally:
+
+```bash
+python3.11 web/flask_app.py
+```
+
+Run on a visible host and port, for example on lxplus:
+
+```bash
+OMS_DASHBOARD_HOST=0.0.0.0 OMS_DASHBOARD_PORT=8502 python3.11 web/flask_app.py
+```
+
+Notes:
+
+- Do not commit real OMS credentials. `env.py` is ignored by git.
+- Monitoring seed lists are read from `examples/*.txt`; the default is `examples/MuonTriggers.txt`.
+- CSV files are written only when the web UI's export button is clicked.
+- More web-specific details are in [`web/README.md`](web/README.md).
+
 ### `ratevsls.py`
 * HLT paths or L1 rates or counts for a given set of runs/lumi sections
 ```
