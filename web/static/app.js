@@ -1,6 +1,8 @@
 const state = {
   config: null,
   dashboard: null,
+  dashboardRatio: null,
+  dashboardRatioLoaded: false,
   projection: null,
   projectionResults: [],
   activeProjectionIndex: 0,
@@ -14,11 +16,14 @@ const state = {
   selectedAvailableSeeds: new Set(),
   selectedMonitoringSeeds: new Set(),
   refreshTimer: null,
+  projectionSettingsSaveTimer: null,
+  dashboardReferenceSaveTimer: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const PROJECTION_SETTINGS_KEY = "oms_l1_projection_settings_v1";
+const DASHBOARD_REFERENCE_SETTINGS_KEY = "oms_l1_dashboard_reference_settings_v1";
 
 function valueOf(selector, fallback = "") {
   const node = $(selector);
@@ -106,12 +111,10 @@ function projectionCsvColumns() {
   return [
     { key: "bit", label: "L1 bit" },
     { key: "pathname", label: "L1 trigger name" },
+    { key: "reference_rate", label: "Reference rate" },
+    { key: "lumi_ratio", label: "Lumi ratio" },
     { key: "expected_rate", label: "Projection" },
     { key: "rate", label: "Measured" },
-    { key: "reference_rate", label: "Reference rate" },
-    { key: "reference_lumi", label: "Reference lumi" },
-    { key: "init_lumi", label: "Comparison lumi" },
-    { key: "lumi_ratio", label: "Lumi ratio" },
     { key: "ratio", label: "Ratio" },
     { key: "run", label: "Run" },
     { key: "lumisection", label: "LS" },
@@ -225,7 +228,7 @@ function setSidebarCollapsed(collapsed) {
   window.setTimeout(() => {
     window.dispatchEvent(new Event("resize"));
     if (window.Plotly) {
-      ["deviation-chart"].forEach((id) => {
+      ["deviation-chart", "dashboard-ratio-chart"].forEach((id) => {
         const chart = document.getElementById(id);
         if (chart) Plotly.Plots.resize(chart);
       });
@@ -260,7 +263,7 @@ function setSeedSelection(value) {
   if (!input) return;
   input.value = value;
   updateSeedPresetState();
-  loadDashboard({ includeRates: false }).catch((error) => toast(error.message));
+  refreshDashboard({ includeRates: false }).catch((error) => toast(error.message));
 }
 
 function setupSeedPresets() {
@@ -358,7 +361,7 @@ async function saveMonitoringSeeds() {
   setMonitoringSeeds(payload.seeds || [], payload.path);
   toast(`Saved ${payload.count} monitoring seeds.`);
   if (valueOf("#trigger-file").trim() === payload.path) {
-    loadDashboard({ includeRates: true }).catch((error) => toast(error.message));
+    refreshDashboard({ includeRates: true }).catch((error) => toast(error.message));
   }
 }
 
@@ -477,9 +480,7 @@ function rateClass(value) {
 function ratioClass(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return "";
-  if (num >= 2) return "positive";
-  if (num <= 0.5) return "negative";
-  return "";
+  return num >= 0.7 && num <= 2.0 ? "ratio-ok" : "ratio-alert";
 }
 
 function lsWindowText(row) {
@@ -493,19 +494,32 @@ function lsWindowText(row) {
 
 function renderLatestRates(rows) {
   const body = $("#latest-rates");
+  if (!body) return;
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="5">No selected L1 rates found.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6">No selected L1 rates found.</td></tr>`;
     return;
   }
   body.innerHTML = rows.map((row) => `
     <tr>
       <td class="seed" title="${row.pathname}">${row.pathname}</td>
-      <td class="num">${row.lumisection || "-"}</td>
+      <td class="num">${lsWindowText(row)}</td>
+      <td class="num">${fmt(row.n_points, 0)}</td>
       <td class="num">${fmt(row.rate)}</td>
-      <td class="num">${fmt(row.init_lumi, 4)}</td>
+      <td class="num">${fmtLumi(row.init_lumi)}</td>
       <td>${row.beams_stable ? "stable" : "not stable"}</td>
     </tr>
   `).join("");
+}
+
+function seedSelectionSummary(data) {
+  if (data?.all_triggers) return "All L1 seeds";
+  const count = Number(data?.trigger_count || 0);
+  const triggerFile = String(data?.trigger_file || "");
+  const defaultFile = String(state.config?.default_trigger_file || "");
+  const source = triggerFile === defaultFile
+    ? "Monitoring seeds"
+    : (triggerFile.split(/[\\/]/).pop() || "Custom seeds");
+  return count > 0 ? `${count} ${source}` : source;
 }
 
 function parseRunList(value) {
@@ -547,6 +561,317 @@ function plotLayout(yTitle) {
   };
 }
 
+function ratioAxisRange(values) {
+  const finite = (values || [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  let min = 0.5;
+  let max = 2.0;
+  if (finite.length) {
+    min = Math.min(min, ...finite);
+    max = Math.max(max, ...finite);
+  }
+  if (max <= 2.0 && min >= 0.5) {
+    return [0.5, 2];
+  }
+  const padding = Math.max((max - min) * 0.08, 0.05);
+  return [Math.min(0, min - padding), max + padding];
+}
+
+function applyRatioAxisRange(layout, values) {
+  layout.yaxis = {
+    ...(layout.yaxis || {}),
+    range: ratioAxisRange(values),
+    autorange: false,
+  };
+}
+
+function applyLumisectionDataRange(layout, values = []) {
+  const finite = (values || [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  const minValue = finite.length ? Math.min(...finite) : null;
+  const maxValue = finite.length ? Math.max(...finite) : null;
+  let range = null;
+  if (minValue !== null && maxValue !== null) {
+    const span = Math.max(1, maxValue - minValue);
+    const pad = Math.max(0.5, span * 0.02);
+    range = [minValue - pad, maxValue + pad];
+  }
+  layout.xaxis = {
+    ...(layout.xaxis || {}),
+    title: { text: "Lumisection", font: { color: "#dce6f2" } },
+    ...(range ? { range } : {}),
+  };
+}
+
+function suspiciousRatioItems(rows) {
+  const bySeed = new Map();
+  (rows || []).forEach((row) => {
+    const ratio = Number(row.ratio);
+    const ls = Number(row.lumisection);
+    if (!Number.isFinite(ratio) || !Number.isFinite(ls)) return;
+    if (ratio >= 0.7 && ratio <= 2.0) return;
+    const seed = String(row.pathname || "Unknown");
+    if (!bySeed.has(seed)) bySeed.set(seed, []);
+    bySeed.get(seed).push({ ls, ratio, severity: Math.abs(ratio - 1) });
+  });
+  return Array.from(bySeed.entries())
+    .map(([seed, points]) => {
+      points.sort((a, b) => a.ls - b.ls);
+      return {
+        seed,
+        points,
+        maxSeverity: Math.max(...points.map((point) => point.severity)),
+      };
+    })
+    .sort((a, b) => b.maxSeverity - a.maxSeverity || b.points.length - a.points.length);
+}
+
+function renderSuspiciousReport(selector, rows) {
+  const node = $(selector);
+  if (!node) return;
+  const items = suspiciousRatioItems(rows);
+  if (!items.length) {
+    node.innerHTML = `
+      <div class="suspicious-report-head">
+        <strong>Suspicious LS</strong>
+        <span>No LS outside ratio 0.7-2.0.</span>
+      </div>
+    `;
+    return;
+  }
+
+  const total = items.reduce((sum, item) => sum + item.points.length, 0);
+  const shown = items.slice(0, 8).map((item) => {
+    const points = item.points.slice(0, 6)
+      .map((point) => `(${point.ls}: ${fmt(point.ratio, 3)})`)
+      .join(", ");
+    const more = item.points.length > 6 ? `, +${item.points.length - 6} more` : "";
+    return `<div><span>${escapeHtml(item.seed)}</span>: ${escapeHtml(points + more)}</div>`;
+  }).join("");
+  const hidden = items.length > 8 ? `<div class="muted">+${items.length - 8} more triggers</div>` : "";
+  node.innerHTML = `
+    <div class="suspicious-report-head">
+      <strong>Suspicious LS</strong>
+      <span>${total} points outside ratio 0.7-2.0</span>
+    </div>
+    <div class="suspicious-list">${shown}${hidden}</div>
+  `;
+}
+
+function dashboardReferencePayload() {
+  return {
+    rate_field: valueOf("#rate-field", state.config?.default_rate_field || "pre_dt_before_prescale_rate"),
+    reference_run: Number(valueOf("#dashboard-reference-run", "387892")),
+    reference_lumi_mode: "range",
+    reference_ls_min: Number(valueOf("#dashboard-reference-ls-min", "100")),
+    reference_ls_max: Number(valueOf("#dashboard-reference-ls-max", "200")),
+    reference_single_ls: Number(valueOf("#dashboard-reference-ls-min", "100")),
+    reference_hardcoded_lumi: 0,
+    max_lumisections: Number(valueOf("#dashboard-ratio-max-ls", "120") || 120),
+  };
+}
+
+function dashboardReferenceState() {
+  return {
+    reference_run: valueOf("#dashboard-reference-run", "387892"),
+    reference_ls_min: valueOf("#dashboard-reference-ls-min", "100"),
+    reference_ls_max: valueOf("#dashboard-reference-ls-max", "200"),
+    max_lumisections: valueOf("#dashboard-ratio-max-ls", "120"),
+    auto_refresh: Boolean($("#dashboard-ratio-auto")?.checked),
+  };
+}
+
+function applyDashboardReferenceSettings(saved) {
+  if (!hasProjectionSettings(saved)) return false;
+  const fields = {
+    "#dashboard-reference-run": saved.reference_run,
+    "#dashboard-reference-ls-min": saved.reference_ls_min,
+    "#dashboard-reference-ls-max": saved.reference_ls_max,
+    "#dashboard-ratio-max-ls": saved.max_lumisections,
+  };
+  Object.entries(fields).forEach(([selector, value]) => {
+    if (value !== undefined && value !== null) setValue(selector, value);
+  });
+  if (saved.auto_refresh !== undefined) {
+    setChecked("#dashboard-ratio-auto", saved.auto_refresh);
+  }
+  return true;
+}
+
+function localDashboardReferenceSettings() {
+  try {
+    return JSON.parse(window.localStorage.getItem(DASHBOARD_REFERENCE_SETTINGS_KEY) || "null");
+  } catch (_error) {
+    return null;
+  }
+}
+
+function saveDashboardReferenceSettingsToServer(settings) {
+  return fetchJson("/api/dashboard-reference-settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ settings }),
+  });
+}
+
+function scheduleDashboardReferenceSave(settings) {
+  window.clearTimeout(state.dashboardReferenceSaveTimer);
+  state.dashboardReferenceSaveTimer = window.setTimeout(() => {
+    saveDashboardReferenceSettingsToServer(settings).catch((error) => {
+      console.warn("Failed to save dashboard reference settings:", error.message);
+    });
+  }, 350);
+}
+
+function saveDashboardReferenceSettings() {
+  const settings = dashboardReferenceState();
+  try {
+    window.localStorage.setItem(DASHBOARD_REFERENCE_SETTINGS_KEY, JSON.stringify(settings));
+  } catch (_error) {
+    // Ignore storage failures; server save is the source of truth.
+  }
+  scheduleDashboardReferenceSave(settings);
+}
+
+async function restoreDashboardReferenceSettings() {
+  let serverSettings = null;
+  try {
+    const payload = await fetchJson("/api/dashboard-reference-settings");
+    serverSettings = payload.settings || null;
+  } catch (error) {
+    console.warn("Failed to load dashboard reference settings:", error.message);
+  }
+  if (applyDashboardReferenceSettings(serverSettings)) {
+    try {
+      window.localStorage.setItem(DASHBOARD_REFERENCE_SETTINGS_KEY, JSON.stringify(serverSettings));
+    } catch (_error) {
+      // Ignore storage failures.
+    }
+    return;
+  }
+  const localSettings = localDashboardReferenceSettings();
+  if (applyDashboardReferenceSettings(localSettings)) {
+    scheduleDashboardReferenceSave(dashboardReferenceState());
+  }
+}
+
+function dashboardRatioSummary(context) {
+  if (!context) return "Uses the saved Bunch Projection reference run and monitoring seeds.";
+  const refLs = `${context.reference_ls_min ?? "-"}-${context.reference_ls_max ?? "-"}`;
+  const curLs = context.current_ls_min && context.current_ls_max
+    ? `${context.current_ls_min}-${context.current_ls_max}`
+    : "-";
+  return [
+    `Reference ${context.reference_run} LS ${refLs}`,
+    `current ${context.current_run} stable LS ${curLs}`,
+    `${context.trigger_count || 0} monitoring seeds`,
+    `avg lumi ${fmtLumi(context.current_inst_lumi_avg)}`,
+  ].join(" · ");
+}
+
+function renderDashboardRatioPlot(data) {
+  const chart = document.getElementById("dashboard-ratio-chart");
+  if (!chart || !window.Plotly) return;
+  const rows = data?.rows || [];
+  const context = data?.context || {};
+  const summary = $("#dashboard-ratio-summary");
+  if (summary) summary.textContent = dashboardRatioSummary(context);
+
+  const grouped = new Map();
+  const yValues = [];
+  const xValues = [];
+  rows.forEach((row) => {
+    const ls = Number(row.lumisection);
+    const ratio = Number(row.ratio);
+    if (!Number.isFinite(ls) || !Number.isFinite(ratio)) return;
+    yValues.push(ratio);
+    xValues.push(ls);
+    if (!grouped.has(row.pathname)) grouped.set(row.pathname, []);
+    grouped.get(row.pathname).push({ ls, ratio });
+  });
+
+  const traces = Array.from(grouped.entries()).map(([name, points]) => {
+    points.sort((a, b) => a.ls - b.ls);
+    return {
+      type: "scatter",
+      mode: points.length > 1 ? "lines+markers" : "markers",
+      name,
+      x: points.map((point) => point.ls),
+      y: points.map((point) => point.ratio),
+      marker: { size: 7 },
+      line: { width: 2 },
+      hovertemplate: `LS %{x}<br>ratio %{y:.3f}<extra>%{fullData.name}</extra>`,
+    };
+  });
+
+  const layout = plotLayout("Ratio");
+  applyRatioAxisRange(layout, yValues);
+  applyLumisectionDataRange(layout, xValues);
+  layout.height = 360;
+  layout.margin = { l: 58, r: 20, t: 12, b: 50 };
+  layout.shapes = [{
+    type: "line",
+    xref: "paper",
+    x0: 0,
+    x1: 1,
+    yref: "y",
+    y0: 1,
+    y1: 1,
+    line: { color: "#8b949e", width: 1, dash: "dash" },
+  }];
+  if (!traces.length) {
+    layout.annotations = [{
+      text: "No stable current LS ratio points yet.",
+      xref: "paper",
+      yref: "paper",
+      x: 0.5,
+      y: 0.5,
+      showarrow: false,
+      font: { color: "#9aa4b2", size: 14 },
+    }];
+  }
+  Plotly.react(chart, traces, layout, {
+    responsive: true,
+    displaylogo: false,
+    modeBarButtonsToRemove: ["lasso2d", "select2d"],
+  });
+  renderSuspiciousReport("#dashboard-suspicious-report", rows);
+}
+
+async function loadDashboardRatioPlot(options = {}) {
+  const quiet = Boolean(options.quiet);
+  const button = $("#load-dashboard-ratio");
+  if (!quiet) {
+    setBusy(true, "Loading dashboard plot...");
+    setButtonBusy(button, true, "Load plot", "Loading...");
+    await waitForPaint();
+  }
+  try {
+    const payload = await fetchJson("/api/dashboard/reference-ratio", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(dashboardReferencePayload()),
+    });
+    state.dashboardRatio = payload;
+    state.dashboardRatioLoaded = true;
+    renderDashboardRatioPlot(payload);
+  } finally {
+    if (!quiet) {
+      setButtonBusy(button, false, "Load plot", "Loading...");
+      setBusy(false);
+    }
+  }
+}
+
+async function refreshDashboard(options = {}) {
+  await loadDashboard(options);
+  if (state.dashboardRatioLoaded && $("#dashboard-ratio-auto")?.checked) {
+    await loadDashboardRatioPlot({ quiet: true });
+  }
+}
+
 async function loadDashboard(options = {}) {
   const includeRates = options.includeRates === true;
   const params = new URLSearchParams({
@@ -559,10 +884,8 @@ async function loadDashboard(options = {}) {
   state.dashboard = data;
   renderMetrics(data.run);
   renderLatestRates(data.latest || []);
-  const sourceText = data.all_triggers ? "full L1 menu" : data.trigger_file;
-  $("#trigger-summary").textContent = data.rates_loaded
-    ? `${data.trigger_count} seeds from ${sourceText}`
-    : `Run status loaded. Click Load rates to fetch seed rates from ${sourceText}.`;
+  const triggerSummary = $("#trigger-summary");
+  if (triggerSummary) triggerSummary.textContent = seedSelectionSummary(data);
   $("#last-updated").textContent = `updated ${nowText()}`;
   const liveBadge = $("#live-badge");
   liveBadge.textContent = data.is_live ? "LIVE" : "CLOSED";
@@ -625,23 +948,20 @@ function projectionFormState() {
   };
 }
 
-function saveProjectionSettings() {
+function localProjectionSettings() {
   try {
-    window.localStorage.setItem(PROJECTION_SETTINGS_KEY, JSON.stringify(projectionFormState()));
+    return JSON.parse(window.localStorage.getItem(PROJECTION_SETTINGS_KEY) || "null");
   } catch (_error) {
-    // Ignore storage failures; the form still works normally.
+    return null;
   }
 }
 
-function restoreProjectionSettings() {
-  let saved = null;
-  try {
-    saved = JSON.parse(window.localStorage.getItem(PROJECTION_SETTINGS_KEY) || "null");
-  } catch (_error) {
-    saved = null;
-  }
-  if (!saved || typeof saved !== "object") return;
+function hasProjectionSettings(settings) {
+  return settings && typeof settings === "object" && Object.keys(settings).length > 0;
+}
 
+function applyProjectionSettings(saved) {
+  if (!hasProjectionSettings(saved)) return false;
   const fields = {
     "#reference-run": saved.reference_run,
     "#reference-lumi-mode": saved.reference_lumi_mode,
@@ -666,13 +986,64 @@ function restoreProjectionSettings() {
   if (Array.isArray(saved.comparisons)) {
     state.comparisons = saved.comparisons.filter((item) => item && typeof item === "object");
   }
+  return true;
+}
+
+function saveProjectionSettingsToServer(settings) {
+  return fetchJson("/api/projection-settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ settings }),
+  });
+}
+
+function scheduleProjectionSettingsSave(settings) {
+  window.clearTimeout(state.projectionSettingsSaveTimer);
+  state.projectionSettingsSaveTimer = window.setTimeout(() => {
+    saveProjectionSettingsToServer(settings).catch((error) => {
+      console.warn("Failed to save projection settings:", error.message);
+    });
+  }, 350);
+}
+
+function saveProjectionSettings() {
+  const settings = projectionFormState();
+  try {
+    window.localStorage.setItem(PROJECTION_SETTINGS_KEY, JSON.stringify(settings));
+  } catch (_error) {
+    // Ignore storage failures; the form still works normally.
+  }
+  scheduleProjectionSettingsSave(settings);
+}
+
+async function restoreProjectionSettings() {
+  let serverSettings = null;
+  try {
+    const payload = await fetchJson("/api/projection-settings");
+    serverSettings = payload.settings || null;
+  } catch (error) {
+    console.warn("Failed to load server projection settings:", error.message);
+  }
+  if (applyProjectionSettings(serverSettings)) {
+    try {
+      window.localStorage.setItem(PROJECTION_SETTINGS_KEY, JSON.stringify(serverSettings));
+    } catch (_error) {
+      // Ignore storage failures; server settings already loaded.
+    }
+    return;
+  }
+
+  const localSettings = localProjectionSettings();
+  if (applyProjectionSettings(localSettings)) {
+    scheduleProjectionSettingsSave(projectionFormState());
+  }
 }
 
 function comparisonLabel(comparison) {
   const run = comparison.run || "auto";
   const mode = comparison.lumi_mode || "latest_window";
   let range = "";
-  if (mode === "latest_window") range = `last ${comparison.ls_window} LS`;
+  if (mode === "latest_window") range = `last ${comparison.ls_window} LS from stable`;
   if (mode === "range") range = `LS ${comparison.ls_min}-${comparison.ls_max}`;
   if (mode === "single") range = `LS ${comparison.single_ls}`;
   if (mode === "hardcoded") range = `hardcoded lumi ${comparison.hardcoded_lumi}`;
@@ -733,6 +1104,7 @@ function projectionPayload(comparison = null) {
     current_ls_max: activeComparison.ls_max,
     current_single_ls: activeComparison.single_ls,
     current_hardcoded_lumi: activeComparison.hardcoded_lumi,
+    projection_plot_ls_limit: state.config?.default_projection_plot_ls_limit || 120,
     stable_only: !activeComparison.include_unstable,
   };
 }
@@ -923,13 +1295,31 @@ function shortRateSampleLabel(sample, rows) {
   return run ? `${mode} · run ${run}` : mode;
 }
 
-function ratePlotLayout(rows) {
+function ratePlotLayout(rows, seed) {
   const yValues = rows.map((row) => Number(row.rate)).filter(Number.isFinite);
   const maxY = yValues.length ? Math.max(...yValues) : 1;
   const layout = plotLayout("Rate [Hz]");
-  layout.height = 330;
-  layout.margin = { l: 62, r: 20, t: 18, b: 58 };
-  layout.showlegend = false;
+  layout.height = 390;
+  layout.margin = { l: 62, r: 20, t: 88, b: 58 };
+  layout.title = {
+    text: seed,
+    font: { color: "#f0f6fc", size: 15 },
+    x: 0.5,
+    xanchor: "center",
+    y: 0.98,
+  };
+  layout.showlegend = true;
+  layout.legend = {
+    orientation: "h",
+    x: 0,
+    y: 1.16,
+    xanchor: "left",
+    yanchor: "bottom",
+    bgcolor: "rgba(15, 21, 30, 0.78)",
+    bordercolor: "#263241",
+    borderwidth: 1,
+    font: { color: "#dce6f2", size: 11 },
+  };
   layout.paper_bgcolor = "#0f151e";
   layout.plot_bgcolor = "#0f151e";
   layout.xaxis.title = { text: "Inst luminosity", font: { color: "#dce6f2", size: 12 } };
@@ -999,13 +1389,6 @@ function renderRatePlots(rows) {
           </button>
         </div>
       </header>
-      <div class="rate-legend">
-        ${samples.map((sample) => {
-          const sampleRows = values.filter((row) => row.sample === sample);
-          const style = sampleStyle(sample);
-          return `<span><i style="background:${style.color}"></i>${escapeHtml(shortRateSampleLabel(sample, sampleRows))}</span>`;
-        }).join("")}
-      </div>
       <div id="rate-plot-${index}" class="rate-plot"></div>
     </article>
   `;
@@ -1072,7 +1455,7 @@ function renderRatePlots(rows) {
         hoverinfo: "skip",
       });
     }
-    const layout = ratePlotLayout(values);
+    const layout = ratePlotLayout(values, seed);
     if (traces.length === 1 && !traces[0].x.length) {
       layout.annotations = [{
         text: "No positive-lumi rate points.",
@@ -1166,10 +1549,10 @@ function renderProjectionLatest(rows) {
   const body = $("#projection-latest");
   const fullBody = $("#full-l1-table");
   if (!rows.length) {
-    const empty = `<tr><td colspan="11">No projection rows found for this comparison. Include unstable LS or change the LS range.</td></tr>`;
+    const empty = `<tr><td colspan="9">No projection rows found for this comparison. Include unstable LS or change the LS range.</td></tr>`;
     body.innerHTML = empty;
     if (fullBody) {
-      fullBody.innerHTML = `<tr><td colspan="11">Run a projection to populate this table.</td></tr>`;
+      fullBody.innerHTML = `<tr><td colspan="9">Run a projection to populate this table.</td></tr>`;
     }
     return;
   }
@@ -1179,13 +1562,11 @@ function renderProjectionLatest(rows) {
       <td class="num">${lsWindowText(row)}</td>
       <td class="num">${row.n_points ?? "-"}</td>
       <td class="num">${row.bit ?? "-"}</td>
+      <td class="num">${fmt(row.reference_rate)}</td>
+      <td class="num">${fmt(row.lumi_ratio, 3)}</td>
       <td class="num">${fmt(row.expected_rate)}</td>
       <td class="num">${fmt(row.rate)}</td>
-      <td class="num">${fmtLumi(row.reference_lumi)}</td>
-      <td class="num">${fmtLumi(row.init_lumi)}</td>
-      <td class="num">${fmt(row.lumi_ratio, 3)}</td>
       <td class="num ${ratioClass(row.ratio)}">${fmt(row.ratio, 3)}</td>
-      <td>${row.model_status || "-"}</td>
     </tr>
   `).join("");
   const sorted = [...rows].sort((a, b) => Number(b.ratio || -Infinity) - Number(a.ratio || -Infinity));
@@ -1195,13 +1576,11 @@ function renderProjectionLatest(rows) {
         <td class="seed" title="${row.pathname}">${row.pathname}</td>
         <td class="num">${row.lumisection || "-"}</td>
         <td class="num">${row.bit ?? "-"}</td>
+        <td class="num">${fmt(row.reference_rate)}</td>
+        <td class="num">${fmt(row.lumi_ratio, 3)}</td>
         <td class="num">${fmt(row.expected_rate)}</td>
         <td class="num">${fmt(row.rate)}</td>
-        <td class="num">${fmtLumi(row.reference_lumi)}</td>
-        <td class="num">${fmtLumi(row.init_lumi)}</td>
-        <td class="num">${fmt(row.lumi_ratio, 3)}</td>
         <td class="num ${ratioClass(row.ratio)}">${fmt(row.ratio, 3)}</td>
-        <td>${row.model_status || "-"}</td>
       </tr>
     `).join("");
   }
@@ -1383,6 +1762,8 @@ function renderDeviationChart(rows) {
   const metric = projectionMetricConfig[metricKey];
   const validOnly = $("#projection-valid-only")?.checked !== false;
   const grouped = new Map();
+  const yValues = [];
+  const xValues = [];
   rows.forEach((row) => {
     if (!grouped.has(row.pathname)) grouped.set(row.pathname, []);
     grouped.get(row.pathname).push(row);
@@ -1391,23 +1772,31 @@ function renderDeviationChart(rows) {
     .map(([name, values]) => {
       const points = values
         .map((row) => ({
-          x: row.lumisection,
+          ls: Number(row.lumisection),
           y: Number(row[metricKey]),
         }))
-        .filter((point) => Number.isFinite(point.x));
-      const hasOverlayValue = points.some((point) => Number.isFinite(point.y));
-      if (validOnly && !hasOverlayValue) return null;
+        .filter((point) => Number.isFinite(point.ls) && Number.isFinite(point.y));
+      if (validOnly && !points.length) return null;
+      if (!points.length) return null;
+      points.forEach((point) => {
+        yValues.push(point.y);
+        xValues.push(point.ls);
+      });
       return {
         type: "scatter",
         mode: "lines+markers",
         name,
-        x: points.map((point) => point.x),
-        y: points.map((point) => Number.isFinite(point.y) ? point.y : null),
+        x: points.map((point) => point.ls),
+        y: points.map((point) => point.y),
         hovertemplate: `LS %{x}<br>${metric.hover} %{y:${metric.digits}}<extra>%{fullData.name}</extra>`,
       };
     })
     .filter(Boolean);
   const layout = plotLayout(metric.label);
+  applyLumisectionDataRange(layout, xValues);
+  if (metricKey === "ratio" || metricKey === "lumi_ratio") {
+    applyRatioAxisRange(layout, yValues);
+  }
   const referenceLine = metric.referenceLine();
   if (referenceLine !== null && Number.isFinite(referenceLine)) {
     layout.shapes = [{
@@ -1437,6 +1826,7 @@ function renderDeviationChart(rows) {
     displaylogo: false,
     displayModeBar: false,
   });
+  renderSuspiciousReport("#projection-suspicious-report", rows);
 }
 
 async function runProjection() {
@@ -1503,19 +1893,37 @@ function setupRefresh() {
     const seconds = Math.max(5, Number(refreshInput?.value || 30));
     $("#refresh-label").textContent = `${seconds}s`;
     state.refreshTimer = window.setInterval(() => {
-      loadDashboard({ includeRates: false }).catch((error) => toast(error.message));
+      refreshDashboard({ includeRates: false }).catch((error) => toast(error.message));
     }, seconds * 1000);
   };
   bind("#refresh-seconds", "change", schedule);
-  bind("#refresh-now", "click", () => loadDashboard({ includeRates: false }).catch((error) => toast(error.message)));
-  bind("#topbar-refresh", "click", () => loadDashboard({ includeRates: false }).catch((error) => toast(error.message)));
+  bind("#refresh-now", "click", () => refreshDashboard({ includeRates: false }).catch((error) => toast(error.message)));
+  bind("#topbar-refresh", "click", () => refreshDashboard({ includeRates: false }).catch((error) => toast(error.message)));
+  bind("#load-dashboard-ratio", "click", () => {
+    loadDashboardRatioPlot().catch((error) => toast(error.message));
+  });
+  bind("#dashboard-ratio-max-ls", "change", () => {
+    saveDashboardReferenceSettings();
+    if (state.dashboardRatioLoaded) {
+      loadDashboardRatioPlot().catch((error) => toast(error.message));
+    }
+  });
+  [
+    "#dashboard-reference-run",
+    "#dashboard-reference-ls-min",
+    "#dashboard-reference-ls-max",
+    "#dashboard-ratio-auto",
+  ].forEach((selector) => {
+    bind(selector, "input", saveDashboardReferenceSettings);
+    bind(selector, "change", saveDashboardReferenceSettings);
+  });
   bind("#load-rates", "click", async () => {
     const button = $("#load-rates");
     setBusy(true, "Loading seed rates...");
     setButtonBusy(button, true, "Load rates", "Loading...");
     try {
       await waitForPaint();
-      await loadDashboard({ includeRates: true });
+      await refreshDashboard({ includeRates: true });
     } catch (error) {
       toast(error.message);
     } finally {
@@ -1533,13 +1941,13 @@ function setupRefresh() {
       loadL1PrescaleTable().catch((error) => toast(error.message));
     }
   });
-  bind("#ls-window", "change", () => loadDashboard({ includeRates: false }).catch((error) => toast(error.message)));
+  bind("#ls-window", "change", () => refreshDashboard({ includeRates: false }).catch((error) => toast(error.message)));
   bind("#rate-field", "change", () => {
-    loadDashboard({ includeRates: false }).catch((error) => toast(error.message));
+    refreshDashboard({ includeRates: false }).catch((error) => toast(error.message));
   });
   bind("#trigger-file", "change", () => {
     updateSeedPresetState();
-    loadDashboard({ includeRates: false }).catch((error) => toast(error.message));
+    refreshDashboard({ includeRates: false }).catch((error) => toast(error.message));
   });
   bind("#projection-y-metric", "change", () => {
     renderDeviationChart(state.projection?.series || []);
@@ -1565,7 +1973,6 @@ function setupConfig(config) {
   rateField.value = config.default_rate_field;
   const configJson = $("#config-json");
   if (configJson) configJson.textContent = JSON.stringify(config, null, 2);
-  restoreProjectionSettings();
 }
 
 async function init() {
@@ -1575,11 +1982,13 @@ async function init() {
     const config = await fetchJson("/api/config");
     state.config = config;
     setupConfig(config);
+    await restoreProjectionSettings();
+    await restoreDashboardReferenceSettings();
     setupSeedPresets();
     setupMonitoringSeeds();
     setupProjectionControls();
     setupRefresh();
-    loadDashboard({ includeRates: false }).catch((error) => toast(error.message));
+    refreshDashboard({ includeRates: false }).catch((error) => toast(error.message));
     loadExports().catch((error) => toast(error.message));
     loadMonitoringSeeds().catch((error) => toast(error.message));
   } catch (error) {

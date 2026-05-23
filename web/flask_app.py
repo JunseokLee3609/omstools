@@ -173,15 +173,93 @@ def _default_rate_field(value=None):
     return config.DEFAULT_RATE_FIELD
 
 
+PROJECTION_SETTING_KEYS = {
+    "reference_run",
+    "reference_lumi_mode",
+    "reference_ls_min",
+    "reference_ls_max",
+    "reference_single_ls",
+    "reference_hardcoded_lumi",
+    "comparison_run",
+    "current_lumi_mode",
+    "current_ls_window",
+    "current_ls_min",
+    "current_ls_max",
+    "current_single_ls",
+    "current_hardcoded_lumi",
+    "include_unstable",
+    "comparisons",
+}
+
+
+DASHBOARD_REFERENCE_SETTING_KEYS = {
+    "reference_run",
+    "reference_ls_min",
+    "reference_ls_max",
+    "max_lumisections",
+    "auto_refresh",
+}
+
+
+def _read_json_settings(path, allowed_keys):
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {key: value for key, value in payload.items() if key in allowed_keys}
+
+
+def _write_json_settings(path, settings, allowed_keys):
+    clean = {
+        key: value
+        for key, value in (settings or {}).items()
+        if key in allowed_keys
+    }
+    config.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(clean, indent=2, sort_keys=True))
+    tmp_path.replace(path)
+    return clean
+
+
+def _read_projection_settings():
+    return _read_json_settings(config.PROJECTION_SETTINGS_FILE, PROJECTION_SETTING_KEYS)
+
+
+def _write_projection_settings(settings):
+    return _write_json_settings(
+        config.PROJECTION_SETTINGS_FILE,
+        settings,
+        PROJECTION_SETTING_KEYS,
+    )
+
+
+def _read_dashboard_reference_settings():
+    return _read_json_settings(
+        config.DASHBOARD_REFERENCE_SETTINGS_FILE,
+        DASHBOARD_REFERENCE_SETTING_KEYS,
+    )
+
+
+def _write_dashboard_reference_settings(settings):
+    return _write_json_settings(
+        config.DASHBOARD_REFERENCE_SETTINGS_FILE,
+        settings,
+        DASHBOARD_REFERENCE_SETTING_KEYS,
+    )
+
+
 EXPORT_COLUMNS = [
     ("bit", "L1 bit"),
     ("pathname", "L1 trigger name"),
+    ("reference_rate", "Reference rate"),
+    ("lumi_ratio", "Lumi ratio"),
     ("expected_rate", "Projection"),
     ("rate", "Measured"),
-    ("reference_rate", "Reference rate"),
-    ("reference_lumi", "Reference lumi"),
-    ("init_lumi", "Init lumi"),
-    ("lumi_ratio", "Lumi ratio"),
     ("ratio", "Ratio"),
     ("run", "Run"),
     ("lumisection", "LS"),
@@ -245,6 +323,27 @@ def _lumi_stats_from_frame(df):
     }
 
 
+def _trim_latest_lumisections(df, max_lumisections):
+    if df is None or df.empty or max_lumisections is None:
+        return df
+    if "lumisection" not in df.columns:
+        return df
+    try:
+        max_count = int(max_lumisections)
+    except (TypeError, ValueError):
+        return df
+    if max_count <= 0:
+        return df
+    values = sorted(
+        int(value)
+        for value in pd.to_numeric(df["lumisection"], errors="coerce").dropna().unique()
+    )
+    if len(values) <= max_count:
+        return df
+    keep = set(values[-max_count:])
+    return df[df["lumisection"].isin(keep)].copy()
+
+
 def _apply_lumi_override(df, value):
     if value is None or df is None or df.empty:
         return df
@@ -253,10 +352,37 @@ def _apply_lumi_override(df, value):
     return updated
 
 
+def _latest_stable_lumisection(run, last_ls, chunk_size=300):
+    try:
+        run = int(run)
+        end_ls = int(last_ls)
+    except (TypeError, ValueError):
+        return None
+    if run <= 0 or end_ls <= 0:
+        return None
+
+    while end_ls > 0:
+        start_ls = max(1, end_ls - int(chunk_size) + 1)
+        lumisections = oms_data.get_lumisections(run, start_ls, end_ls)
+        if not lumisections.empty and "beams_stable" in lumisections.columns:
+            stable = lumisections[lumisections["beams_stable"] == True]
+            if not stable.empty and "lumisection" in stable.columns:
+                values = pd.to_numeric(stable["lumisection"], errors="coerce").dropna()
+                if not values.empty:
+                    return int(values.max())
+        if start_ls <= 1:
+            break
+        end_ls = start_ls - 1
+
+    return None
+
+
 def _resolve_projection_lumi_window(payload, prefix, summary, default_mode):
     mode = str(payload.get(f"{prefix}_lumi_mode") or default_mode).strip()
     hardcoded_lumi = None
     last_ls = int(summary.get("last_lumisection_number") or 0)
+    anchor_lumisection = None
+    anchor_kind = None
 
     if mode == "latest_window":
         window = _payload_int(
@@ -265,7 +391,16 @@ def _resolve_projection_lumi_window(payload, prefix, summary, default_mode):
             config.DEFAULT_CURRENT_LS_WINDOW,
             minimum=1,
         )
-        ls_max = last_ls
+        run = summary.get("run_number")
+        stable_ls = _latest_stable_lumisection(run, last_ls)
+        if stable_ls is not None:
+            ls_max = stable_ls
+            anchor_lumisection = stable_ls
+            anchor_kind = "last_stable"
+        else:
+            ls_max = last_ls
+            anchor_lumisection = last_ls
+            anchor_kind = "last_run"
         ls_min = max(1, ls_max - int(window) + 1) if ls_max > 0 else 1
     elif mode == "single":
         single_ls = _payload_int(payload, f"{prefix}_single_ls", minimum=1)
@@ -296,6 +431,8 @@ def _resolve_projection_lumi_window(payload, prefix, summary, default_mode):
         "mode": mode,
         "ls_min": int(ls_min),
         "ls_max": int(ls_max),
+        "anchor_lumisection": anchor_lumisection,
+        "anchor_kind": anchor_kind,
         "hardcoded_lumi": hardcoded_lumi,
     }
 
@@ -416,8 +553,63 @@ def api_config():
             "default_rate_field": config.DEFAULT_RATE_FIELD,
             "rate_field_options": config.RATE_FIELD_OPTIONS,
             "default_current_ls_window": config.DEFAULT_CURRENT_LS_WINDOW,
+            "default_projection_plot_ls_limit": config.DEFAULT_PROJECTION_PLOT_LS_LIMIT,
             "default_refresh_seconds": config.DEFAULT_REFRESH_SECONDS,
             "export_dir": str(config.EXPORT_DIR),
+            "projection_settings_path": str(config.PROJECTION_SETTINGS_FILE),
+            "dashboard_reference_settings_path": str(config.DASHBOARD_REFERENCE_SETTINGS_FILE),
+        }
+    )
+
+
+@app.route("/api/projection-settings", methods=["GET"])
+def api_projection_settings_get():
+    return jsonify(
+        {
+            "path": str(config.PROJECTION_SETTINGS_FILE),
+            "settings": _read_projection_settings(),
+        }
+    )
+
+
+@app.route("/api/projection-settings", methods=["PUT"])
+def api_projection_settings_put():
+    payload = request.get_json(silent=True) or {}
+    settings = payload.get("settings", payload)
+    if not isinstance(settings, dict):
+        return jsonify({"error": "Projection settings must be a JSON object."}), 400
+    clean = _write_projection_settings(settings)
+    return jsonify(
+        {
+            "status": "saved",
+            "path": str(config.PROJECTION_SETTINGS_FILE),
+            "settings": clean,
+        }
+    )
+
+
+@app.route("/api/dashboard-reference-settings", methods=["GET"])
+def api_dashboard_reference_settings_get():
+    return jsonify(
+        {
+            "path": str(config.DASHBOARD_REFERENCE_SETTINGS_FILE),
+            "settings": _read_dashboard_reference_settings(),
+        }
+    )
+
+
+@app.route("/api/dashboard-reference-settings", methods=["PUT"])
+def api_dashboard_reference_settings_put():
+    payload = request.get_json(silent=True) or {}
+    settings = payload.get("settings", payload)
+    if not isinstance(settings, dict):
+        return jsonify({"error": "Dashboard reference settings must be a JSON object."}), 400
+    clean = _write_dashboard_reference_settings(settings)
+    return jsonify(
+        {
+            "status": "saved",
+            "path": str(config.DASHBOARD_REFERENCE_SETTINGS_FILE),
+            "settings": clean,
         }
     )
 
@@ -539,15 +731,30 @@ def api_l1_seeds():
         run = int(current["run_number"])
 
     summary = oms_data.get_run_summary(int(run))
+    table = oms_data.get_l1_prescale_table(int(run))
+    if not table.empty and "name" in table.columns:
+        seeds = sorted(str(seed) for seed in table["name"].dropna().unique())
+        return jsonify(
+            {
+                "run": int(run),
+                "ls": None,
+                "source": "prescale_table",
+                "count": len(seeds),
+                "seeds": seeds,
+            }
+        )
+
     last_ls = int(summary.get("last_lumisection_number") or 0)
     if last_ls <= 0:
-        return jsonify({"run": int(run), "count": 0, "seeds": []})
+        return jsonify({"run": int(run), "ls": None, "source": "none", "count": 0, "seeds": []})
+
+    seed_ls = _latest_stable_lumisection(int(run), last_ls) or last_ls
 
     rates = oms_data.get_l1_ls_rates(
         int(run),
         [],
-        ls_min=last_ls,
-        ls_max=last_ls,
+        ls_min=seed_ls,
+        ls_max=seed_ls,
         rate_field=rate_field,
     )
     if rates.empty:
@@ -557,7 +764,8 @@ def api_l1_seeds():
     return jsonify(
         {
             "run": int(run),
-            "ls": last_ls,
+            "ls": seed_ls,
+            "source": "stable_lumisection" if seed_ls != last_ls else "last_lumisection",
             "count": len(seeds),
             "seeds": seeds,
         }
@@ -599,6 +807,113 @@ def api_dashboard():
             "rate_field": rate_field,
             "latest": _df_records(latest),
             "series": _df_records(rates),
+        }
+    )
+
+
+@app.route("/api/dashboard/reference-ratio", methods=["POST"])
+def api_dashboard_reference_ratio():
+    payload = request.get_json(silent=True) or {}
+    reference_run = _payload_int(payload, "reference_run", minimum=1)
+    if reference_run is None:
+        return jsonify({"error": "Missing required field: reference_run"}), 400
+
+    max_lumisections = _payload_int(payload, "max_lumisections", 120, minimum=1)
+    rate_field = _default_rate_field(payload.get("rate_field"))
+    triggers = oms_data.load_trigger_list(_monitoring_seed_file())
+    if not triggers:
+        return jsonify({"error": "Monitoring seed list is empty."}), 400
+
+    current = oms_data.get_current_global_run()
+    current_run = int(current["run_number"])
+    ref_summary = oms_data.get_run_summary(int(reference_run))
+    cur_summary = oms_data.get_run_summary(current_run)
+    current_last_ls = int(cur_summary.get("last_lumisection_number") or 0)
+    if current_last_ls <= 0:
+        return jsonify(
+            {
+                "context": {
+                    "reference_run": int(reference_run),
+                    "current_run": current_run,
+                    "trigger_count": len(triggers),
+                    "rate_field": rate_field,
+                    "row_count": 0,
+                },
+                "rows": [],
+            }
+        )
+
+    try:
+        reference_window = _resolve_projection_lumi_window(
+            payload,
+            "reference",
+            ref_summary,
+            "range",
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    reference_df = oms_data.get_l1_ls_rates(
+        int(reference_run),
+        triggers,
+        ls_min=reference_window["ls_min"],
+        ls_max=reference_window["ls_max"],
+        rate_field=rate_field,
+    )
+    reference_df = _apply_lumi_override(reference_df, reference_window["hardcoded_lumi"])
+    reference_df = _filtered_plot_frame(reference_df, stable_only=True)
+
+    scan_window = max(int(max_lumisections) * 4, int(max_lumisections), 40)
+    current_ls_min = max(1, current_last_ls - scan_window + 1)
+    current_df = oms_data.get_l1_ls_rates(
+        current_run,
+        triggers,
+        ls_min=current_ls_min,
+        ls_max=current_last_ls,
+        rate_field=rate_field,
+    )
+    current_df = _filtered_plot_frame(current_df, stable_only=True)
+    current_df = _trim_latest_lumisections(current_df, max_lumisections)
+
+    reference_lumi_stats = _lumi_stats_from_frame(reference_df)
+    current_lumi_stats = _lumi_stats_from_frame(current_df)
+    projected = projection.apply_spreadsheet_projection(reference_df, current_df)
+    if not projected.empty:
+        projected = projected.sort_values(["lumisection", "pathname"])
+
+    current_lumisections = []
+    if not current_df.empty and "lumisection" in current_df.columns:
+        current_lumisections = sorted(
+            int(value)
+            for value in pd.to_numeric(current_df["lumisection"], errors="coerce").dropna().unique()
+        )
+
+    context = {
+        "reference_run": int(reference_run),
+        "reference_lumi_mode": reference_window["mode"],
+        "reference_ls_min": reference_window["ls_min"],
+        "reference_ls_max": reference_window["ls_max"],
+        "reference_anchor_lumisection": reference_window["anchor_lumisection"],
+        "reference_anchor_kind": reference_window["anchor_kind"],
+        "reference_inst_lumi_avg": reference_lumi_stats["average"],
+        "reference_inst_lumi_latest": reference_lumi_stats["latest"],
+        "current_run": current_run,
+        "current_ls_min": current_lumisections[0] if current_lumisections else None,
+        "current_ls_max": current_lumisections[-1] if current_lumisections else None,
+        "current_inst_lumi_avg": current_lumi_stats["average"],
+        "current_inst_lumi_latest": current_lumi_stats["latest"],
+        "stable_only": True,
+        "max_lumisections": int(max_lumisections),
+        "trigger_count": len(triggers),
+        "rate_field": rate_field,
+        "row_count": int(len(projected)),
+    }
+    return jsonify(
+        {
+            "context": context,
+            "reference_run": _public_run_summary(ref_summary),
+            "current_run": _public_run_summary(cur_summary),
+            "rows": _df_records(projected),
         }
     )
 
@@ -682,14 +997,52 @@ def api_projection():
     current_lumi_stats = _lumi_stats_from_frame(current_df)
 
     log_step("apply spreadsheet projection")
-    projected = projection.apply_spreadsheet_projection(
-        reference_df,
-        current_df,
+    plot_limit = _payload_int(
+        payload,
+        "projection_plot_ls_limit",
+        config.DEFAULT_PROJECTION_PLOT_LS_LIMIT,
+        minimum=1,
     )
+    current_last_ls = int(cur_summary.get("last_lumisection_number") or 0)
+    current_plot_df = pd.DataFrame()
+    if current_last_ls > 0:
+        log_step(f"fetch recorded LS list run={current_run} ls=1-{current_last_ls}")
+        plot_lumi_df = oms_data.get_lumisections(int(current_run), 1, current_last_ls)
+        plot_lumi_df = _trim_latest_lumisections(plot_lumi_df, plot_limit)
+        plot_ls = []
+        if not plot_lumi_df.empty and "lumisection" in plot_lumi_df.columns:
+            plot_ls = sorted(
+                int(value)
+                for value in pd.to_numeric(plot_lumi_df["lumisection"], errors="coerce").dropna().unique()
+            )
+        if plot_ls:
+            log_step(
+                f"fetch plot rates run={current_run} "
+                f"recorded ls={plot_ls[0]}-{plot_ls[-1]} "
+                f"count={len(plot_ls)}"
+            )
+            current_plot_df = oms_data.get_l1_ls_rates(
+                int(current_run),
+                triggers,
+                ls_min=plot_ls[0],
+                ls_max=plot_ls[-1],
+                rate_field=rate_field,
+            )
+            current_plot_df = _filtered_plot_frame(current_plot_df, stable_only=False)
+            current_plot_df = current_plot_df[current_plot_df["lumisection"].isin(plot_ls)].copy()
+            log_step(f"plot rows={len(current_plot_df)}")
+
+    projected = projection.apply_spreadsheet_projection(reference_df, current_plot_df)
     latest = projection.apply_spreadsheet_projection_summary(
         reference_df,
         current_df,
     )
+    plot_lumisections = []
+    if not current_plot_df.empty and "lumisection" in current_plot_df.columns:
+        plot_lumisections = sorted(
+            int(value)
+            for value in pd.to_numeric(current_plot_df["lumisection"], errors="coerce").dropna().unique()
+        )
     context = {
         "trigger_file": trigger_label,
         "trigger_count": int(projected["pathname"].nunique()) if not projected.empty else len(triggers),
@@ -700,6 +1053,8 @@ def api_projection():
         "reference_lumi_mode": reference_window["mode"],
         "reference_ls_min": reference_window["ls_min"],
         "reference_ls_max": reference_window["ls_max"],
+        "reference_anchor_lumisection": reference_window["anchor_lumisection"],
+        "reference_anchor_kind": reference_window["anchor_kind"],
         "reference_hardcoded_lumi": reference_window["hardcoded_lumi"],
         "reference_inst_lumi_avg": reference_lumi_stats["average"],
         "reference_inst_lumi_latest": reference_lumi_stats["latest"],
@@ -708,10 +1063,18 @@ def api_projection():
         "current_lumi_mode": current_window["mode"],
         "current_ls_min": current_window["ls_min"],
         "current_ls_max": current_window["ls_max"],
+        "current_anchor_lumisection": current_window["anchor_lumisection"],
+        "current_anchor_kind": current_window["anchor_kind"],
         "current_hardcoded_lumi": current_window["hardcoded_lumi"],
         "current_inst_lumi_avg": current_lumi_stats["average"],
         "current_inst_lumi_latest": current_lumi_stats["latest"],
         "current_lumi_points": current_lumi_stats["points"],
+        "plot_stable_only": False,
+        "plot_includes_unstable": True,
+        "plot_ls_limit": int(plot_limit),
+        "plot_ls_min": plot_lumisections[0] if plot_lumisections else None,
+        "plot_ls_max": plot_lumisections[-1] if plot_lumisections else None,
+        "plot_lumisection_count": len(plot_lumisections),
     }
     log_step("done")
 
