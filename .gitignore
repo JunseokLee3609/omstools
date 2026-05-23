@@ -4,5 +4,6 @@ __pycache__/
 venv/
 outcsv/
 figs/
+web/.state/
 .DS_Store
 .env

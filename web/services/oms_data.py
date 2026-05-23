@@ -226,6 +226,18 @@ def _get_lumisections(run: int, ls_min: Optional[int], ls_max: Optional[int]) ->
     return pd.DataFrame(records)
 
 
+def get_lumisections(
+    run: int,
+    ls_min: Optional[int] = None,
+    ls_max: Optional[int] = None,
+) -> pd.DataFrame:
+    return _get_lumisections(
+        int(run),
+        int(ls_min) if ls_min is not None else None,
+        int(ls_max) if ls_max is not None else None,
+    ).copy()
+
+
 def get_lumi_summary(
     run: int,
     ls_min: Optional[int] = None,

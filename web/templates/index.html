@@ -20,7 +20,7 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=48" />
+    <link rel="stylesheet" href="/static/styles.css?v=63" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   </head>
   <body>
@@ -116,7 +116,6 @@
           <div>
             <div class="eyebrow">Current GLOBAL-RUN</div>
             <h2>OMS L1 Rate Dashboard</h2>
-            <p>Live run status, selected L1 seed rates, and recent LS evolution.</p>
           </div>
           <div class="hero-status">
             <span id="live-badge" class="badge neutral">WAITING</span>
@@ -126,36 +125,42 @@
 
         <section class="metric-grid" id="run-metrics"></section>
 
-        <section class="panel">
+        <section class="panel dashboard-ratio-panel">
           <div class="panel-head">
             <div>
-              <h3>Selected L1 Seeds</h3>
-              <p id="trigger-summary">No trigger file loaded yet.</p>
+              <h3>Current Run Reference Ratio</h3>
+              <p id="dashboard-ratio-summary">Set the reference run and LS range, then compare the current stable LS.</p>
             </div>
             <div class="panel-actions">
-              <button id="load-rates" class="shell-button" type="button">Load rates</button>
+              <label class="check-control">
+                <input id="dashboard-ratio-auto" type="checkbox" checked />
+                Auto refresh
+              </label>
               <div class="inline-control">
-                <label for="ls-window">Recent LS</label>
-                <input id="ls-window" type="number" min="1" value="20" />
+                <label for="dashboard-ratio-max-ls">Max stable LS</label>
+                <input id="dashboard-ratio-max-ls" type="number" min="1" value="120" />
               </div>
+              <button id="load-dashboard-ratio" class="shell-button" type="button">Load plot</button>
             </div>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Seed</th>
-                  <th>LS window</th>
-                  <th>Points</th>
-                  <th>Rate [Hz]</th>
-                  <th>Init lumi</th>
-                  <th>Stable</th>
-                </tr>
-              </thead>
-              <tbody id="latest-rates"></tbody>
-            </table>
+          <div class="dashboard-reference-controls">
+            <label>
+              <span>Reference run</span>
+              <input id="dashboard-reference-run" type="number" min="1" value="387892" />
+            </label>
+            <label>
+              <span>Reference LS min</span>
+              <input id="dashboard-reference-ls-min" type="number" min="1" value="100" />
+            </label>
+            <label>
+              <span>Reference LS max</span>
+              <input id="dashboard-reference-ls-max" type="number" min="1" value="200" />
+            </label>
           </div>
+          <div id="dashboard-ratio-chart" class="chart dashboard-ratio-chart"></div>
+          <div id="dashboard-suspicious-report" class="suspicious-report"></div>
         </section>
+
       </section>
 
       <section id="page-projection" class="page">
@@ -194,7 +199,7 @@
                 <label>Run<input id="comparison-run" type="number" min="1" placeholder="auto" /></label>
                 <label>Type
                   <select id="current-lumi-mode" data-lumi-group="current">
-                    <option value="latest_window">Latest LS window</option>
+                    <option value="latest_window">Latest stable LS window</option>
                     <option value="range">Lumi range</option>
                     <option value="single">Specific LS</option>
                     <option value="hardcoded">Hardcoded lumi</option>
@@ -228,7 +233,7 @@
           <div class="panel-head">
             <div>
               <h3>Latest Projection Ratio</h3>
-              <p>Spreadsheet-style projection, measured rate, ratio, and double ratio.</p>
+              <p>Spreadsheet-style projection, measured rate, and ratio.</p>
             </div>
             <div class="plot-controls">
               <button id="run-projection" class="primary-button compact-action" type="button">Run projection</button>
@@ -259,19 +264,18 @@
                   <th>LS</th>
                   <th>Points</th>
                   <th>Bit</th>
+                  <th>Reference rate</th>
+                  <th>Lumi ratio</th>
                   <th>Projection</th>
                   <th>Measured</th>
-                  <th>Ref lumi</th>
-                  <th>Comp lumi</th>
-                  <th>Lumi ratio</th>
                   <th>Ratio</th>
-                  <th>Status</th>
                 </tr>
               </thead>
               <tbody id="projection-latest"></tbody>
             </table>
           </div>
           <div id="deviation-chart" class="chart"></div>
+          <div id="projection-suspicious-report" class="suspicious-report"></div>
         </section>
 
         <section class="panel">
@@ -443,6 +447,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=48"></script>
+    <script src="/static/app.js?v=63"></script>
   </body>
 </html>
