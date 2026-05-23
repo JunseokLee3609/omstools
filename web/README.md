@@ -64,13 +64,53 @@ From the repository root:
 python3.11 web/flask_app.py
 ```
 
-By default the app uses:
+By default the app listens on localhost:
 
 ```text
 http://127.0.0.1:8502
+http://localhost:8502
 ```
 
-## 5. Run on a Visible Host
+This mode is for a browser running on the same machine as the Flask process.
+
+## 5. Run Through Localhost With SSH Tunnel
+
+Use this when the app runs on lxplus or another remote machine, but you want to open it in your local browser as `localhost`.
+
+On the remote machine, start the dashboard. Binding to `127.0.0.1` is enough for an SSH tunnel:
+
+```bash
+. .venv/bin/activate
+OMS_DASHBOARD_HOST=127.0.0.1 OMS_DASHBOARD_PORT=8502 python3.11 web/flask_app.py
+```
+
+From your local laptop or desktop, open a separate terminal and create the tunnel:
+
+```bash
+ssh -L 8502:127.0.0.1:8502 <username>@lxplus.cern.ch
+```
+
+Then open this in the local browser:
+
+```text
+http://localhost:8502
+```
+
+If local port `8502` is already in use, map a different local port:
+
+```bash
+ssh -L 8503:127.0.0.1:8502 <username>@lxplus.cern.ch
+```
+
+Then open:
+
+```text
+http://localhost:8503
+```
+
+The first port is the local browser port. The second port is the remote Flask server port.
+
+## 6. Run on a Visible Host
 
 For lxplus or another remote machine, bind the server to `0.0.0.0`:
 
@@ -97,7 +137,7 @@ If the port is already in use, either stop the old process or use another port:
 OMS_DASHBOARD_HOST=0.0.0.0 OMS_DASHBOARD_PORT=8503 python3.11 web/flask_app.py
 ```
 
-## 6. Monitoring Seed Lists
+## 7. Monitoring Seed Lists
 
 The default monitoring seed list is:
 
@@ -121,7 +161,17 @@ L1_MinimumBiasHF1_AND_BptxAND
 
 The web UI also provides a Monitoring Seeds page where seeds can be moved between the available seed list and the monitoring seed list.
 
-## 7. CSV Export
+## 8. Projection Settings and Runtime Files
+
+The Bunch Projection page stores the reference run, comparison builder entries, and related UI settings under:
+
+```text
+web/.state/
+```
+
+This directory is ignored by git.
+
+## 9. CSV Export
 
 Projection CSV files are not written continuously.
 
@@ -133,23 +183,29 @@ outcsv/web_exports/
 
 This directory is ignored by git.
 
-## 8. Main Pages
+## 10. Main Pages
 
-- `Dashboard`: current run summary and selected L1 seed rates.
-- `Bunch Projection`: reference run setup, comparison run setup, projection table, and rate plots.
+- `Dashboard`: current run summary, selected L1 seed rates, and current-run reference ratio plot.
+- `Bunch Projection`: reference run setup, comparison run setup, projection table, suspicious LS report, and rate plots.
 - `L1 Prescale Table`: prescale information for a run, with optional monitoring seed filtering.
 - `Monitoring Seeds`: configure which L1 seeds are used by monitoring and projection views.
 - `CSV Exports`: browse CSV files exported from the web UI.
 - `Settings`: app-level settings such as refresh interval and rate field.
 
-## 9. Troubleshooting
+## 11. Troubleshooting
 
 ### Port Already in Use
 
-Check which process is listening:
+Check which process is listening on the remote machine:
 
 ```bash
 ss -ltnp | grep 8502
+```
+
+Check which process is listening on a local Linux or macOS machine:
+
+```bash
+lsof -iTCP:8502 -sTCP:LISTEN
 ```
 
 Use a different port if needed:
@@ -160,13 +216,21 @@ OMS_DASHBOARD_PORT=8503 python3.11 web/flask_app.py
 
 ### Cannot Connect from Browser
 
-Make sure the app was started with:
+For direct remote access, make sure the app was started with:
 
 ```bash
 OMS_DASHBOARD_HOST=0.0.0.0
 ```
 
 Also check that the browser URL uses the remote host/IP, not `127.0.0.1`.
+
+For SSH tunnel access, keep the browser URL as:
+
+```text
+http://localhost:<local-port>
+```
+
+and make sure the tunnel command is still running.
 
 ### OMS Authentication Fails
 
@@ -180,7 +244,7 @@ Check that:
 
 Hard-refresh the browser page, or open it in a new private window, so old cached JavaScript is not reused.
 
-## 10. Developer Checks
+## 12. Developer Checks
 
 Useful quick checks before pushing changes:
 

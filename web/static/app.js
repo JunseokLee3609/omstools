@@ -643,20 +643,19 @@ function renderSuspiciousReport(selector, rows) {
   }
 
   const total = items.reduce((sum, item) => sum + item.points.length, 0);
-  const shown = items.slice(0, 8).map((item) => {
+  const shown = items.map((item) => {
     const points = item.points.slice(0, 6)
       .map((point) => `(${point.ls}: ${fmt(point.ratio, 3)})`)
       .join(", ");
     const more = item.points.length > 6 ? `, +${item.points.length - 6} more` : "";
     return `<div><span>${escapeHtml(item.seed)}</span>: ${escapeHtml(points + more)}</div>`;
   }).join("");
-  const hidden = items.length > 8 ? `<div class="muted">+${items.length - 8} more triggers</div>` : "";
   node.innerHTML = `
     <div class="suspicious-report-head">
       <strong>Suspicious LS</strong>
-      <span>${total} points outside ratio 0.7-2.0</span>
+      <span>${items.length} triggers, ${total} points outside ratio 0.7-2.0</span>
     </div>
-    <div class="suspicious-list">${shown}${hidden}</div>
+    <div class="suspicious-list">${shown}</div>
   `;
 }
 
