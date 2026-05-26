@@ -1029,6 +1029,7 @@ function projectionFormState() {
     current_single_ls: valueOf("#current-single-ls"),
     current_hardcoded_lumi: valueOf("#current-hardcoded-lumi"),
     include_unstable: Boolean($("#comparison-include-unstable")?.checked),
+    do_projection: $("#projection-do-projection")?.checked !== false,
     comparisons: state.comparisons,
   };
 }
@@ -1069,6 +1070,9 @@ function applyProjectionSettings(saved) {
   });
   if (saved.include_unstable !== undefined) {
     setChecked("#comparison-include-unstable", saved.include_unstable);
+  }
+  if (saved.do_projection !== undefined) {
+    setChecked("#projection-do-projection", saved.do_projection);
   }
   if (Array.isArray(saved.comparisons)) {
     state.comparisons = saved.comparisons.filter((item) => item && typeof item === "object");
@@ -1196,6 +1200,16 @@ function projectionPayload(comparison = null) {
   };
 }
 
+function projectionDoProjectionEnabled() {
+  return $("#projection-do-projection")?.checked !== false;
+}
+
+function updateProjectionActionLabel() {
+  const button = $("#run-projection");
+  if (!button) return;
+  button.textContent = projectionDoProjectionEnabled() ? "Run projection" : "Load snapshot";
+}
+
 function updateLumiModeControls(group) {
   const mode = $(`#${group}-lumi-mode`)?.value;
   $$(`[data-mode-for="${group}"]`).forEach((node) => {
@@ -1225,10 +1239,13 @@ function setupProjectionControls() {
     "#current-single-ls",
     "#current-hardcoded-lumi",
     "#comparison-include-unstable",
+    "#projection-do-projection",
   ].forEach((selector) => {
     bind(selector, "input", saveProjectionSettings);
     bind(selector, "change", saveProjectionSettings);
   });
+  bind("#projection-do-projection", "change", updateProjectionActionLabel);
+  updateProjectionActionLabel();
   bind("#add-comparison", "click", () => {
     const comparison = comparisonFromForm();
     state.comparisons.push(comparison);
@@ -1360,6 +1377,38 @@ async function saveProjectionCsv(kind) {
   } finally {
     setButtonBusy(button, false, label, "Saving...");
   }
+}
+
+function exportActiveProjectionCsv() {
+  const result = state.projectionResults[state.activeProjectionIndex];
+  if (result?.mode !== "snapshot") {
+    saveProjectionCsv("latest");
+    return;
+  }
+  const payload = result.data || {};
+  const rows = payload.rows || [];
+  if (!rows.length) {
+    toast("No snapshot rows to export yet.");
+    return;
+  }
+  const run = payload.run?.run_number || "run";
+  const ref = payload.reference?.run?.run_number;
+  const refSuffix = ref ? `_ref${ref}` : "";
+  const exportRows = rows.map((row) => ({
+    ...row,
+    ls: payload.selection?.label || "Run summary",
+  }));
+  downloadCsv(`projection_snapshot_${run}${refSuffix}_${payload.rate_field || "rate"}.csv`, exportRows, [
+    { key: "current_run", label: "Current Run" },
+    { key: "name", label: "Trigger" },
+    { key: "ls", label: "LS" },
+    { key: "points", label: "Points" },
+    { key: "reference_rate", label: "Reference Rate [Hz]" },
+    { key: "rate", label: `${payload.rate_label || "Rate"} [Hz]` },
+    { key: "raw_ratio", label: "Raw Ratio" },
+    { key: "initial_prescale", label: "Initial Prescale" },
+    { key: "final_prescale", label: "Final Prescale" },
+  ]);
 }
 
 function renderRatePlotContext(context) {
@@ -1835,7 +1884,70 @@ async function loadExports() {
   renderExports(payload);
 }
 
+function setProjectionTableHead(mode, payload = {}) {
+  const head = $("#projection-table-head");
+  if (!head) return;
+  if (mode === "snapshot") {
+    head.innerHTML = `
+      <th>Current Run</th>
+      <th>Trigger</th>
+      <th>LS</th>
+      <th>Points</th>
+      <th>Reference rate</th>
+      <th>${escapeHtml(payload.rate_label || "Rate")}</th>
+      <th>Raw ratio</th>
+      <th>Initial PS</th>
+      <th>Final PS</th>
+    `;
+    return;
+  }
+  head.innerHTML = `
+    <th>Seed</th>
+    <th>LS</th>
+    <th>Points</th>
+    <th>Bit</th>
+    <th>Reference rate</th>
+    <th>Lumi ratio</th>
+    <th>Projection</th>
+    <th>Measured</th>
+    <th>Ratio</th>
+  `;
+}
+
+function snapshotResultLabel(payload, fallbackComparison) {
+  const run = payload?.run?.run_number || fallbackComparison?.run || "auto";
+  const selection = payload?.selection || {};
+  const stableText = selection.stable_only ? "stable only" : "stable+unstable";
+  return `${run} · ${selection.label || "Run summary"} · ${stableText}`;
+}
+
+function renderProjectionSnapshotRows(payload) {
+  setProjectionTableHead("snapshot", payload);
+  const body = $("#projection-latest");
+  if (!body) return;
+  const rows = payload?.rows || [];
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="9">No snapshot rows found for this comparison.</td></tr>`;
+    return;
+  }
+  const selectionLabel = payload?.selection?.label || "Run summary";
+  body.innerHTML = rows.map((row) => `
+    <tr>
+      <td class="num">${escapeHtml(row.current_run ?? payload?.run?.run_number ?? "-")}</td>
+      <td class="seed" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</td>
+      <td class="num">${escapeHtml(selectionLabel)}</td>
+      <td class="num">${row.points ?? "-"}</td>
+      <td class="num">${fmt(row.reference_rate)}</td>
+      <td class="num">${fmt(row.rate)}</td>
+      <td class="num ${ratioClass(row.raw_ratio)}">${fmt(row.raw_ratio, 3)}</td>
+      <td class="num">${escapeHtml(prescaleText(row, "initial"))}</td>
+      <td class="num">${escapeHtml(prescaleText(row, "final"))}</td>
+    </tr>
+  `).join("");
+}
+
 function renderProjectionLatest(rows) {
+  setProjectionTableHead("projection");
   const body = $("#projection-latest");
   const fullBody = $("#full-l1-table");
   if (!rows.length) {
@@ -1876,6 +1988,180 @@ function renderProjectionLatest(rows) {
   }
 }
 
+function projectionSnapshotParams(data, comparison) {
+  const context = data?.context || {};
+  const params = new URLSearchParams();
+  const run = finiteNumber(context.current_run ?? comparison?.run);
+  if (run !== null) params.set("run", String(Math.trunc(run)));
+  params.set("rate_field", context.rate_field || valueOf("#rate-field", state.config?.default_rate_field || "pre_dt_before_prescale_rate"));
+
+  const minLs = finiteNumber(context.current_ls_min);
+  const maxLs = finiteNumber(context.current_ls_max);
+  const mode = String(context.current_lumi_mode || comparison?.lumi_mode || "");
+  if (mode !== "hardcoded" && minLs !== null && maxLs !== null) {
+    if (Number(minLs) === Number(maxLs)) {
+      params.set("ls_mode", "single");
+      params.set("ls", String(Math.trunc(maxLs)));
+    } else {
+      params.set("ls_mode", "range");
+      params.set("ls_min", String(Math.trunc(Math.min(minLs, maxLs))));
+      params.set("ls_max", String(Math.trunc(Math.max(minLs, maxLs))));
+    }
+  } else {
+    params.set("ls_mode", "run");
+  }
+
+  params.set("stable_only", context.stable_only ? "1" : "0");
+  return params;
+}
+
+function projectionRateSnapshotParams(comparison) {
+  const params = new URLSearchParams();
+  const run = finiteNumber(comparison?.run);
+  if (run !== null) params.set("run", String(Math.trunc(run)));
+  params.set("rate_field", valueOf("#rate-field", state.config?.default_rate_field || "pre_dt_before_prescale_rate"));
+
+  const mode = String(comparison?.lumi_mode || "latest_window");
+  if (mode === "latest_window") {
+    params.set("ls_mode", "latest_window");
+    params.set("ls_window", String(Math.max(1, Number(comparison?.ls_window || 20))));
+  } else if (mode === "single") {
+    params.set("ls_mode", "single");
+    params.set("ls", String(Math.max(1, Number(comparison?.single_ls || 1))));
+  } else if (mode === "range" || mode === "hardcoded") {
+    params.set("ls_mode", "range");
+    params.set("ls_min", String(Math.max(1, Number(comparison?.ls_min || 1))));
+    params.set("ls_max", String(Math.max(1, Number(comparison?.ls_max || comparison?.ls_min || 1))));
+  } else {
+    params.set("ls_mode", "run");
+  }
+  params.set("stable_only", comparison?.include_unstable ? "0" : "1");
+
+  const referenceRun = finiteNumber(valueOf("#reference-run"));
+  if (referenceRun !== null) {
+    params.set("reference_run", String(Math.trunc(referenceRun)));
+    const refMode = valueOf("#reference-lumi-mode", "range");
+    if (refMode === "single") {
+      params.set("reference_ls_mode", "single");
+      params.set("reference_ls", valueOf("#reference-single-ls", "1") || "1");
+    } else if (refMode === "range" || refMode === "hardcoded") {
+      params.set("reference_ls_mode", "range");
+      params.set("reference_ls_min", valueOf("#reference-ls-min", "1") || "1");
+      params.set("reference_ls_max", valueOf("#reference-ls-max", "20") || "20");
+    } else {
+      params.set("reference_ls_mode", "run");
+    }
+  }
+  return params;
+}
+
+async function fetchRateSnapshotForProjection(comparison) {
+  const params = projectionRateSnapshotParams(comparison);
+  return fetchJson(`/api/rate-snapshot?${params.toString()}`);
+}
+
+async function fetchProjectionSnapshot(data, comparison) {
+  const params = projectionSnapshotParams(data, comparison);
+  if (!params.get("run")) {
+    return { error: "Comparison run is missing." };
+  }
+  try {
+    return { payload: await fetchJson(`/api/rate-snapshot?${params.toString()}`) };
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
+function renderProjectionSnapshot(result) {
+  const panel = $("#projection-snapshot-panel");
+  if (!panel) return;
+  const summary = $("#projection-snapshot-summary");
+  const metrics = $("#projection-snapshot-metrics");
+  const seedBody = $("#projection-snapshot-table");
+  const rateHead = $("#projection-snapshot-rate-head");
+
+  if (!result) {
+    panel.hidden = true;
+    if (summary) summary.textContent = "Run projection to load comparison run snapshot details.";
+    if (metrics) metrics.innerHTML = "";
+    return;
+  }
+
+  panel.hidden = false;
+  const snapshotEnvelope = result.mode === "snapshot" ? { payload: result.data } : result.snapshot;
+  const projectionContext = result.mode === "projection" ? (result.data?.context || {}) : null;
+
+  if (snapshotEnvelope?.error) {
+    if (summary) summary.textContent = snapshotEnvelope.error;
+    if (metrics) metrics.innerHTML = "";
+    renderRateSnapshotSummaryTable("#projection-snapshot-l1-summary", [], [
+      { key: "name", format: "text", align: "left", help: true },
+      { key: "rate", format: "number" },
+      { key: "counter", format: "integer" },
+    ]);
+    renderRateSnapshotSummaryTable("#projection-snapshot-deadtimes", [], [
+      { key: "name", format: "text", align: "left", help: true },
+      { key: "percent", format: "number" },
+      { key: "counter", format: "integer" },
+    ]);
+    if (seedBody) seedBody.innerHTML = `<tr><td colspan="4">${escapeHtml(snapshotEnvelope.error)}</td></tr>`;
+    return;
+  }
+
+  const payload = snapshotEnvelope?.payload || {};
+  const run = payload.run || {};
+  const lumi = payload.lumi || {};
+  const selection = payload.selection || {};
+  const selectionLabel = projectionContext
+    ? rateSnapshotProjectionSelectionText(projectionContext, "current")
+    : (selection.label || "Run summary");
+  const stableText = selection.stable_only ? "stable only" : "stable + unstable";
+  if (summary) {
+    summary.textContent = `Run ${run.run_number || projectionContext?.current_run || "-"} · ${selectionLabel} · ${stableText}`;
+  }
+  if (metrics) {
+    metrics.innerHTML = [
+      metric("Run", run.run_number || projectionContext?.current_run || "-", run.sequence || "GLOBAL-RUN", "fa-hashtag", "blue"),
+      metric("Fill", run.fill_number || "-", "OMS fill", "fa-circle-nodes", "green"),
+      metric("Last LS", run.last_lumisection_number || "-", "latest lumisection", "fa-clock", "purple"),
+      metric("Selected LS", selectionLabel, `${projectionContext?.current_lumi_points ?? lumi.n_lumisections ?? 0} points`, "fa-layer-group", "blue"),
+      metric("Selected rate", payload.rate_label || "-", "active rate field", "fa-gauge-high", "blue"),
+      metric("Avg inst lumi", fmtLumi(projectionContext?.current_inst_lumi_avg ?? lumi.average_init_lumi), "selected LS", "fa-chart-line", "gold"),
+      metric("Latest inst lumi", fmtLumi(projectionContext?.current_inst_lumi_latest ?? lumi.latest_init_lumi), `LS ${projectionContext?.current_ls_max ?? lumi.latest_lumisection ?? "-"}`, "fa-bolt", "purple"),
+      metric("L1 key", run.l1_key || "-", run.l1_menu || "", "fa-key", "green"),
+      metric("Prescale index", run.initial_prescale_index ?? "-", "active L1 prescale", "fa-sliders", "purple"),
+      metric("Stable beam", run.stable_beam ? "Yes" : "No", run.sequence || "", "fa-signal", run.stable_beam ? "green" : "red"),
+    ].join("");
+  }
+
+  renderRateSnapshotSummaryTable("#projection-snapshot-l1-summary", payload.l1_triggers || [], [
+    { key: "name", format: "text", align: "left", help: true },
+    { key: "rate", format: "number" },
+    { key: "counter", format: "integer" },
+  ]);
+  renderRateSnapshotSummaryTable("#projection-snapshot-deadtimes", payload.deadtimes || [], [
+    { key: "name", format: "text", align: "left", help: true },
+    { key: "percent", format: "number" },
+    { key: "counter", format: "integer" },
+  ]);
+
+  if (rateHead) rateHead.textContent = `${payload.rate_label || "Rate"} [Hz]`;
+  const rows = payload.rows || [];
+  if (!seedBody) return;
+  if (!rows.length) {
+    seedBody.innerHTML = `<tr><td colspan="4">No monitoring seed rows found for this comparison run.</td></tr>`;
+    return;
+  }
+  seedBody.innerHTML = rows.map((row) => `
+    <tr>
+      <td class="seed" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</td>
+      <td class="num">${fmt(row.rate)}</td>
+      <td class="num">${escapeHtml(prescaleText(row, "initial"))}</td>
+      <td class="num">${escapeHtml(prescaleText(row, "final"))}</td>
+    </tr>
+  `).join("");
+}
+
 function renderProjectionTabs() {
   const node = $("#comparison-result-tabs");
   if (!node) return;
@@ -1894,10 +2180,22 @@ function showProjectionResult(index) {
   const result = state.projectionResults[index];
   if (!result) return;
   state.activeProjectionIndex = index;
-  state.projection = result.data;
+  state.projection = result.mode === "projection" ? result.data : null;
   renderProjectionTabs();
-  renderContext(result.data.context || {});
+  if (result.mode === "projection") {
+    renderContext(result.data.context || {});
+  } else {
+    renderContext(null);
+  }
   renderExportLinks(null);
+  renderProjectionSnapshot(result);
+  if (result.mode === "snapshot") {
+    renderProjectionSnapshotRows(result.data || {});
+    Plotly.purge("deviation-chart");
+    const suspicious = $("#projection-suspicious-report");
+    if (suspicious) suspicious.innerHTML = "";
+    return;
+  }
   renderProjectionLatest(result.data.latest || []);
   renderDeviationChart(result.data.series || []);
 }
@@ -2019,6 +2317,7 @@ function helpLabel(value) {
 
 function setupInfoTooltips() {
   let tooltip = null;
+  let activeTarget = null;
 
   const ensureTooltip = () => {
     if (tooltip) return tooltip;
@@ -2031,29 +2330,62 @@ function setupInfoTooltips() {
   const hideTooltip = () => {
     if (!tooltip) return;
     tooltip.classList.remove("visible");
+    tooltip.removeAttribute("data-placement");
+    activeTarget = null;
+  };
+
+  const positionTooltip = (target, tip) => {
+    if (!target || !tip) return;
+    const viewportPadding = 14;
+    const gap = 12;
+    const targetBox = target.getBoundingClientRect();
+    const tipBox = tip.getBoundingClientRect();
+    const spaceRight = window.innerWidth - targetBox.right - viewportPadding;
+    const spaceLeft = targetBox.left - viewportPadding;
+    const spaceBelow = window.innerHeight - targetBox.bottom - viewportPadding;
+    const spaceAbove = targetBox.top - viewportPadding;
+
+    let placement = "bottom";
+    let left = targetBox.left + targetBox.width / 2 - tipBox.width / 2;
+    let top = targetBox.bottom + gap;
+
+    if (spaceBelow < tipBox.height && spaceAbove > tipBox.height + gap) {
+      placement = "top";
+      top = targetBox.top - tipBox.height - gap;
+    }
+
+    if (spaceRight > tipBox.width + gap) {
+      placement = "right";
+      left = targetBox.right + gap;
+      top = targetBox.top + targetBox.height / 2 - tipBox.height / 2;
+    } else if (spaceLeft > tipBox.width + gap) {
+      placement = "left";
+      left = targetBox.left - tipBox.width - gap;
+      top = targetBox.top + targetBox.height / 2 - tipBox.height / 2;
+    }
+
+    left = Math.max(viewportPadding, Math.min(left, window.innerWidth - tipBox.width - viewportPadding));
+    top = Math.max(viewportPadding, Math.min(top, window.innerHeight - tipBox.height - viewportPadding));
+
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+    tip.dataset.placement = placement;
   };
 
   const showTooltip = (target) => {
     const text = target?.dataset?.tooltip;
     if (!text) return;
     const tip = ensureTooltip();
+    activeTarget = target;
     tip.textContent = text;
+    tip.style.left = "-9999px";
+    tip.style.top = "-9999px";
+    tip.removeAttribute("data-placement");
     tip.classList.add("visible");
-
-    const targetBox = target.getBoundingClientRect();
-    const tipBox = tip.getBoundingClientRect();
-    const padding = 14;
-    let left = targetBox.left + targetBox.width / 2 - tipBox.width / 2;
-    let top = targetBox.bottom + 10;
-
-    left = Math.max(padding, Math.min(left, window.innerWidth - tipBox.width - padding));
-    if (top + tipBox.height + padding > window.innerHeight) {
-      top = targetBox.top - tipBox.height - 10;
-    }
-    top = Math.max(padding, top);
-
-    tip.style.left = `${left}px`;
-    tip.style.top = `${top}px`;
+    requestAnimationFrame(() => {
+      if (activeTarget !== target || !tooltip?.classList.contains("visible")) return;
+      positionTooltip(target, tip);
+    });
   };
 
   document.addEventListener("mouseover", (event) => {
@@ -2070,8 +2402,18 @@ function setupInfoTooltips() {
   document.addEventListener("focusout", (event) => {
     if (event.target.closest(".info-dot")) hideTooltip();
   });
-  window.addEventListener("scroll", hideTooltip, true);
-  window.addEventListener("resize", hideTooltip);
+  window.addEventListener("scroll", () => {
+    if (activeTarget && tooltip?.classList.contains("visible")) {
+      positionTooltip(activeTarget, tooltip);
+    }
+  }, true);
+  window.addEventListener("resize", () => {
+    if (activeTarget && tooltip?.classList.contains("visible")) {
+      positionTooltip(activeTarget, tooltip);
+      return;
+    }
+    hideTooltip();
+  });
 }
 
 function renderRateSnapshotSummaryTable(selector, rows, columns) {
@@ -2100,46 +2442,62 @@ function renderRateSnapshotSummaryTable(selector, rows, columns) {
   `).join("");
 }
 
-function renderRateSnapshot(payload) {
+function renderRateSnapshot(payload, projectionPayload = null) {
   state.rateSnapshot = payload;
+  state.rateSnapshotProjection = projectionPayload;
   const rows = payload?.rows || [];
   const reference = payload?.reference || null;
+  const projectionContext = projectionPayload?.context || null;
+  const projectionMode = Boolean(projectionPayload);
+  state.rateSnapshotView = projectionMode ? "projection" : "snapshot";
   const summary = $("#rate-snapshot-summary");
   if (summary) {
-    const refText = reference?.run?.run_number ? `, reference ${reference.run.run_number}` : "";
-    summary.textContent = `${rows.length} monitoring seeds for run ${payload?.run?.run_number || "-"}${refText}.`;
+    if (projectionMode) {
+      const refRun = projectionContext?.reference_run ?? reference?.run?.run_number ?? "-";
+      summary.textContent = `Projection view for run ${projectionContext?.current_run ?? payload?.run?.run_number ?? "-"} against reference ${refRun}.`;
+    } else {
+      const refText = reference?.run?.run_number ? `, reference ${reference.run.run_number}` : "";
+      summary.textContent = `${rows.length} monitoring seeds for run ${payload?.run?.run_number || "-"}${refText}.`;
+    }
   }
   const head = $("#rate-snapshot-rate-head");
-  if (head) head.textContent = `${payload?.rate_label || "Rate"} [Hz]`;
+  if (head) head.textContent = projectionMode ? "Measured [Hz]" : `${payload?.rate_label || "Rate"} [Hz]`;
 
   const metrics = $("#rate-snapshot-metrics");
   if (metrics) {
     const run = payload?.run || {};
     const lumi = payload?.lumi || {};
     const selection = payload?.selection || {};
+    const selectedLabel = projectionContext
+      ? rateSnapshotProjectionSelectionText(projectionContext, "current")
+      : selection.label || "Run summary";
+    const selectedPoints = projectionContext?.current_lumi_points ?? lumi.n_lumisections ?? 0;
+    const averageLumi = projectionContext?.current_inst_lumi_avg ?? lumi.average_init_lumi;
+    const latestLumi = projectionContext?.current_inst_lumi_latest ?? lumi.latest_init_lumi;
+    const latestLumisection = projectionContext?.current_ls_max ?? lumi.latest_lumisection;
     const cards = [
       metric("Run", run.run_number || "-", run.sequence || "GLOBAL-RUN", "fa-hashtag", "blue"),
       metric("Fill", run.fill_number || "-", "OMS fill", "fa-circle-nodes", "green"),
       metric("Last LS", run.last_lumisection_number || "-", "latest lumisection", "fa-clock", "purple"),
-      metric("Selected LS", selection.label || "Run summary", `${lumi.n_lumisections || 0} points`, "fa-layer-group", "blue"),
+      metric("Selected LS", selectedLabel, `${selectedPoints || 0} points`, "fa-layer-group", "blue"),
       metric("Selected rate", payload?.rate_label || "-", "active rate field", "fa-gauge-high", "blue"),
-      metric("Avg inst lumi", fmtLumi(lumi.average_init_lumi), "selected LS", "fa-chart-line", "gold"),
-      metric("Latest inst lumi", fmtLumi(lumi.latest_init_lumi), `LS ${lumi.latest_lumisection || "-"}`, "fa-bolt", "purple"),
+      metric("Avg inst lumi", fmtLumi(averageLumi), "selected LS", "fa-chart-line", "gold"),
+      metric("Latest inst lumi", fmtLumi(latestLumi), `LS ${latestLumisection || "-"}`, "fa-bolt", "purple"),
       metric("L1 key", run.l1_key || "-", `prescale index ${run.initial_prescale_index ?? "-"}`, "fa-key", "green"),
     ];
     if (reference) {
       cards.push(
         metric(
           "Reference run",
-          reference.run?.run_number || "-",
-          reference.selection?.label || "Run summary",
+          (projectionContext?.reference_run ?? reference.run?.run_number) || "-",
+          projectionContext ? rateSnapshotProjectionSelectionText(projectionContext, "reference") : (reference.selection?.label || "Run summary"),
           "fa-code-compare",
           "blue",
         ),
         metric(
           "Reference lumi",
-          fmtLumi(reference.lumi?.average_init_lumi),
-          `${reference.lumi?.n_lumisections || 0} points`,
+          fmtLumi(projectionContext?.reference_inst_lumi_avg ?? reference.lumi?.average_init_lumi),
+          `${(projectionContext?.reference_lumi_points ?? reference.lumi?.n_lumisections) || 0} points`,
           "fa-chart-simple",
           "gold",
         ),
@@ -2160,7 +2518,60 @@ function renderRateSnapshot(payload) {
   ]);
 
   const body = $("#rate-snapshot-table");
+  const tableHead = $("#rate-snapshot-table-head");
   if (!body) return;
+  if (projectionMode) {
+    const mergedRows = mergeRateSnapshotProjectionRows(payload, projectionPayload);
+    state.rateSnapshotMergedRows = mergedRows;
+    if (tableHead) {
+      tableHead.innerHTML = `
+        <th>Current Run</th>
+        <th>Trigger</th>
+        <th>LS</th>
+        <th>Points</th>
+        <th>Reference Rate [Hz]</th>
+        <th>Lumi Ratio</th>
+        <th>Projection [Hz]</th>
+        <th id="rate-snapshot-rate-head">Measured [Hz]</th>
+        <th>Ratio</th>
+        <th>Initial PS</th>
+        <th>Final PS</th>
+      `;
+    }
+    if (!mergedRows.length) {
+      body.innerHTML = `<tr><td colspan="11">No projection rows found for this view.</td></tr>`;
+      return;
+    }
+    body.innerHTML = mergedRows.map((row) => `
+      <tr>
+        <td class="num">${escapeHtml(row.current_run ?? payload?.run?.run_number ?? "-")}</td>
+        <td class="seed" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</td>
+        <td class="num">${escapeHtml(row.ls ?? "-")}</td>
+        <td class="num">${row.points ?? "-"}</td>
+        <td class="num">${fmt(row.reference_rate)}</td>
+        <td class="num">${fmt(row.lumi_ratio, 3)}</td>
+        <td class="num">${fmt(row.expected_rate)}</td>
+        <td class="num">${fmt(row.measured_rate)}</td>
+        <td class="num ${ratioClass(row.ratio)}">${fmt(row.ratio, 3)}</td>
+        <td class="num">${escapeHtml(prescaleText(row, "initial"))}</td>
+        <td class="num">${escapeHtml(prescaleText(row, "final"))}</td>
+      </tr>
+    `).join("");
+    return;
+  }
+
+  state.rateSnapshotMergedRows = rows;
+  if (tableHead) {
+    tableHead.innerHTML = `
+      <th>Current Run</th>
+      <th>Trigger</th>
+      <th>Reference Rate [Hz]</th>
+      <th id="rate-snapshot-rate-head">${payload?.rate_label || "Rate"} [Hz]</th>
+      <th>Raw Ratio</th>
+      <th>Initial PS</th>
+      <th>Final PS</th>
+    `;
+  }
   if (!rows.length) {
     body.innerHTML = `<tr><td colspan="7">No monitoring seed rows found for this run.</td></tr>`;
     return;
@@ -2213,7 +2624,7 @@ async function loadRateSnapshot() {
       await loadMonitoringSeeds();
     }
     const payload = await fetchJson(`/api/rate-snapshot?${params.toString()}`);
-    renderRateSnapshot(payload);
+    renderRateSnapshot(payload, null);
   } catch (error) {
     toast(error.message);
   } finally {
@@ -2231,86 +2642,6 @@ function updateRateSnapshotLsControls() {
   $$('[data-snapshot-reference-ls-mode]').forEach((node) => {
     node.hidden = node.dataset.snapshotReferenceLsMode !== referenceMode;
   });
-}
-
-function rateSnapshotProjectionEnabled() {
-  return $("#rate-snapshot-do-projection")?.checked === true;
-}
-
-function updateRateSnapshotProjectionModeControls(group) {
-  const mode = valueOf(`#rate-snapshot-projection-${group}-mode`, group === "current" ? "latest_window" : "range");
-  $$(`[data-snapshot-projection-mode="${group}"]`).forEach((node) => {
-    const modes = String(node.dataset.modes || "").split(/\s+/).filter(Boolean);
-    node.hidden = !modes.includes(mode);
-  });
-}
-
-function updateRateSnapshotProjectionControls() {
-  const enabled = rateSnapshotProjectionEnabled();
-  const wrap = $("#rate-snapshot-projection-options");
-  if (wrap) wrap.hidden = !enabled;
-  if (!enabled) return;
-  updateRateSnapshotProjectionModeControls("reference");
-  updateRateSnapshotProjectionModeControls("current");
-}
-
-function seedRateSnapshotProjectionDefaults() {
-  const currentMode = valueOf("#rate-snapshot-ls-mode", "run");
-  if (currentMode === "range") {
-    setValue("#rate-snapshot-projection-current-mode", "range");
-    setValue("#rate-snapshot-projection-current-ls-min", valueOf("#rate-snapshot-ls-min", "1"));
-    setValue("#rate-snapshot-projection-current-ls-max", valueOf("#rate-snapshot-ls-max", "20"));
-  } else if (currentMode === "single") {
-    setValue("#rate-snapshot-projection-current-mode", "single");
-    setValue("#rate-snapshot-projection-current-single-ls", valueOf("#rate-snapshot-single-ls", "1"));
-  } else {
-    setValue("#rate-snapshot-projection-current-mode", "latest_window");
-    const lastLs = finiteNumber(state.dashboard?.summary?.last_lumisection_number);
-    const windowSize = finiteNumber(valueOf("#ls-window", "20")) || 20;
-    if (lastLs !== null) {
-      setValue("#rate-snapshot-projection-current-window", Math.max(1, Math.min(windowSize, lastLs)));
-    }
-  }
-
-  const referenceMode = valueOf("#rate-snapshot-reference-ls-mode", "run");
-  if (referenceMode === "single") {
-    setValue("#rate-snapshot-projection-reference-mode", "single");
-    setValue("#rate-snapshot-projection-reference-single-ls", valueOf("#rate-snapshot-reference-single-ls", "1"));
-  } else {
-    setValue("#rate-snapshot-projection-reference-mode", "range");
-    setValue("#rate-snapshot-projection-reference-ls-min", valueOf("#rate-snapshot-reference-ls-min", "1"));
-    setValue("#rate-snapshot-projection-reference-ls-max", valueOf("#rate-snapshot-reference-ls-max", "20"));
-  }
-  updateRateSnapshotProjectionControls();
-}
-
-function rateSnapshotProjectionPayload(snapshotPayload) {
-  const currentRun = finiteNumber(valueOf("#rate-snapshot-run"));
-  const referenceRun = finiteNumber(valueOf("#rate-snapshot-reference-run"));
-  if (referenceRun === null) {
-    throw new Error("Reference run is required for projection mode.");
-  }
-
-  return {
-    trigger_file: snapshotPayload?.monitoring_path || valueOf("#trigger-file", "ALL"),
-    rate_field: valueOf("#rate-field", state.config?.default_rate_field || "pre_dt_before_prescale_rate"),
-    reference_run: referenceRun,
-    reference_lumi_mode: valueOf("#rate-snapshot-projection-reference-mode", "range"),
-    reference_ls_min: Number(valueOf("#rate-snapshot-projection-reference-ls-min", "1") || 1),
-    reference_ls_max: Number(valueOf("#rate-snapshot-projection-reference-ls-max", "1") || 1),
-    reference_single_ls: Number(valueOf("#rate-snapshot-projection-reference-single-ls", "1") || 1),
-    reference_hardcoded_lumi: Number(valueOf("#rate-snapshot-projection-reference-hardcoded-lumi", "0") || 0),
-    current_run: currentRun,
-    current_runs: currentRun !== null ? [currentRun] : [],
-    current_lumi_mode: valueOf("#rate-snapshot-projection-current-mode", "latest_window"),
-    current_ls_window: Number(valueOf("#rate-snapshot-projection-current-window", "20") || 20),
-    current_ls_min: Number(valueOf("#rate-snapshot-projection-current-ls-min", "1") || 1),
-    current_ls_max: Number(valueOf("#rate-snapshot-projection-current-ls-max", "1") || 1),
-    current_single_ls: Number(valueOf("#rate-snapshot-projection-current-single-ls", "1") || 1),
-    current_hardcoded_lumi: Number(valueOf("#rate-snapshot-projection-current-hardcoded-lumi", "0") || 0),
-    projection_plot_ls_limit: state.config?.default_projection_plot_ls_limit || 120,
-    stable_only: !$("#rate-snapshot-projection-include-unstable")?.checked,
-  };
 }
 
 function rateSnapshotProjectionSelectionText(context, prefix) {
@@ -2383,7 +2714,7 @@ function mergeRateSnapshotProjectionRows(snapshotPayload, projectionPayload) {
 
 function exportRateSnapshotCsv() {
   const payload = state.rateSnapshot;
-  const rows = payload?.rows || [];
+  const rows = state.rateSnapshotMergedRows || [];
   if (!rows.length) {
     toast("No rate snapshot rows to export yet.");
     return;
@@ -2391,6 +2722,22 @@ function exportRateSnapshotCsv() {
   const run = payload?.run?.run_number || "run";
   const ref = payload?.reference?.run?.run_number;
   const refSuffix = ref ? `_ref${ref}` : "";
+  if (state.rateSnapshotView === "projection") {
+    downloadCsv(`rate_snapshot_projection_${run}${refSuffix}_${payload.rate_field || "rate"}.csv`, rows, [
+      { key: "current_run", label: "Current Run" },
+      { key: "name", label: "Trigger" },
+      { key: "ls", label: "LS" },
+      { key: "points", label: "Points" },
+      { key: "reference_rate", label: "Reference Rate [Hz]" },
+      { key: "lumi_ratio", label: "Lumi Ratio" },
+      { key: "expected_rate", label: "Projection [Hz]" },
+      { key: "measured_rate", label: "Measured [Hz]" },
+      { key: "ratio", label: "Ratio" },
+      { key: "initial_prescale", label: "Initial Prescale" },
+      { key: "final_prescale", label: "Final Prescale" },
+    ]);
+    return;
+  }
   downloadCsv(`rate_snapshot_${run}${refSuffix}_${payload.rate_field || "rate"}.csv`, rows, [
     { key: "current_run", label: "Current Run" },
     { key: "name", label: "Trigger" },
@@ -2545,15 +2892,32 @@ function renderDeviationChart(rows) {
 
 async function runProjection() {
   const button = $("#run-projection");
-  setBusy(true, "Running projection...");
-  setButtonBusy(button, true, "Run projection", "Running...");
+  const doProjection = projectionDoProjectionEnabled();
+  const busyText = doProjection ? "Running projection..." : "Loading snapshot...";
+  const idleLabel = doProjection ? "Run projection" : "Load snapshot";
+  const busyLabel = doProjection ? "Running..." : "Loading...";
+  setBusy(true, busyText);
+  setButtonBusy(button, true, idleLabel, busyLabel);
   try {
     await waitForPaint();
     saveProjectionSettings();
     const comparisons = state.comparisons.length ? state.comparisons : [comparisonFromForm()];
     state.projectionResults = [];
     for (const comparison of comparisons) {
-      setBusy(true, `Running ${comparisonLabel(comparison)}...`);
+      setBusy(true, `${doProjection ? "Running" : "Loading"} ${comparisonLabel(comparison)}...`);
+      if (!doProjection) {
+        const snapshotPayload = await fetchRateSnapshotForProjection(comparison);
+        state.projectionResults.push({
+          mode: "snapshot",
+          label: snapshotResultLabel(snapshotPayload, comparison),
+          comparison: {
+            ...comparison,
+            run: snapshotPayload?.run?.run_number || comparison.run,
+          },
+          data: snapshotPayload,
+        });
+        continue;
+      }
       let activeComparison = comparison;
       let data = await fetchJson("/api/projection", {
         method: "POST",
@@ -2570,10 +2934,14 @@ async function runProjection() {
         });
       }
       activeComparison = resolvedComparisonFromContext(activeComparison, data.context);
+      setBusy(true, `Loading snapshot ${comparisonLabel(activeComparison)}...`);
+      const snapshot = await fetchProjectionSnapshot(data, activeComparison);
       state.projectionResults.push({
+        mode: "projection",
         label: comparisonLabel(activeComparison),
         comparison: activeComparison,
         data,
+        snapshot,
       });
     }
     showProjectionResult(0);
@@ -2581,7 +2949,8 @@ async function runProjection() {
   } catch (error) {
     toast(error.message);
   } finally {
-    setButtonBusy(button, false, "Run projection", "Running...");
+    setButtonBusy(button, false, idleLabel, busyLabel);
+    updateProjectionActionLabel();
     setBusy(false);
   }
 }
@@ -2738,11 +3107,12 @@ async function init() {
     state.activeProjectionIndex = 0;
     renderContext({});
     renderExportLinks(null);
+    renderProjectionSnapshot(null);
     renderProjectionTabs();
     renderProjectionLatest([]);
     Plotly.purge("deviation-chart");
   });
-  bind("#export-latest-csv", "click", () => saveProjectionCsv("latest"));
+  bind("#export-latest-csv", "click", exportActiveProjectionCsv);
   bind("#export-full-csv", "click", () => saveProjectionCsv("full"));
 }
 

@@ -20,7 +20,7 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=72" />
+    <link rel="stylesheet" href="/static/styles.css?v=74" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   </head>
@@ -232,6 +232,76 @@
         <section class="context-strip" id="projection-context" hidden></section>
         <section class="context-strip" id="export-links" hidden></section>
 
+        <section id="projection-snapshot-panel" class="panel" hidden>
+          <div class="panel-head">
+            <div>
+              <h3>Comparison Run Snapshot</h3>
+              <p id="projection-snapshot-summary">Run projection to load comparison run snapshot details.</p>
+            </div>
+          </div>
+          <div id="projection-snapshot-metrics" class="metric-grid compact-metrics"></div>
+          <div class="snapshot-summary-grid">
+            <article class="snapshot-card">
+              <div class="snapshot-card-head">
+                <h4>L1 Triggers</h4>
+              </div>
+              <div class="mini-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Trigger</th>
+                      <th>Rate [Hz]</th>
+                      <th>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody id="projection-snapshot-l1-summary">
+                    <tr><td colspan="3">Run projection to load rows.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+            <article class="snapshot-card">
+              <div class="snapshot-card-head">
+                <h4>Deadtimes</h4>
+              </div>
+              <div class="mini-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>%</th>
+                      <th>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody id="projection-snapshot-deadtimes">
+                    <tr><td colspan="3">Run projection to load rows.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+            <article class="snapshot-card snapshot-card-wide">
+              <div class="snapshot-card-head">
+                <h4>Comparison Seed Rates</h4>
+              </div>
+              <div class="mini-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Trigger</th>
+                      <th id="projection-snapshot-rate-head">Rate [Hz]</th>
+                      <th>Initial PS</th>
+                      <th>Final PS</th>
+                    </tr>
+                  </thead>
+                  <tbody id="projection-snapshot-table">
+                    <tr><td colspan="4">Run projection to load rows.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
         <section class="panel">
           <div class="panel-head">
             <div>
@@ -239,6 +309,10 @@
               <p>Spreadsheet-style projection, measured rate, and ratio.</p>
             </div>
             <div class="plot-controls">
+              <label class="check-control">
+                <input id="projection-do-projection" type="checkbox" checked />
+                Do projection
+              </label>
               <button id="run-projection" class="primary-button compact-action" type="button">Run projection</button>
               <label class="inline-control">
                 <span>Y axis</span>
@@ -262,7 +336,7 @@
             <div id="comparison-result-tabs" class="comparison-result-tabs"></div>
             <table>
               <thead>
-                <tr>
+                <tr id="projection-table-head">
                   <th>Seed</th>
                   <th>LS</th>
                   <th>Points</th>
@@ -369,71 +443,9 @@
                 <span>Ref LS</span>
                 <input id="rate-snapshot-reference-single-ls" type="number" min="1" value="1" />
               </label>
-              <label class="check-control snapshot-toggle">
-                <input id="rate-snapshot-do-projection" type="checkbox" />
-                Do projection
-              </label>
               <button id="load-rate-snapshot" class="primary-button compact-action" type="button">Process snapshot</button>
               <button id="export-rate-snapshot-csv" class="shell-button" type="button">Export CSV</button>
             </div>
-          </div>
-          <div id="rate-snapshot-projection-options" class="snapshot-projection-options" hidden>
-            <section class="snapshot-projection-block">
-              <h4>Reference projection</h4>
-              <div class="form-grid compact">
-                <label>Type
-                  <select id="rate-snapshot-projection-reference-mode">
-                    <option value="range">Lumi range</option>
-                    <option value="single">Specific LS</option>
-                    <option value="hardcoded">Hardcoded lumi</option>
-                  </select>
-                </label>
-                <label data-snapshot-projection-mode="reference" data-modes="range hardcoded">LS min
-                  <input id="rate-snapshot-projection-reference-ls-min" type="number" min="1" value="1" />
-                </label>
-                <label data-snapshot-projection-mode="reference" data-modes="range hardcoded">LS max
-                  <input id="rate-snapshot-projection-reference-ls-max" type="number" min="1" value="20" />
-                </label>
-                <label data-snapshot-projection-mode="reference" data-modes="single">Specific LS
-                  <input id="rate-snapshot-projection-reference-single-ls" type="number" min="1" value="1" />
-                </label>
-                <label data-snapshot-projection-mode="reference" data-modes="hardcoded">Hardcoded init lumi
-                  <input id="rate-snapshot-projection-reference-hardcoded-lumi" type="number" min="0" step="any" value="0" />
-                </label>
-              </div>
-            </section>
-            <section class="snapshot-projection-block">
-              <h4>Comparison projection</h4>
-              <div class="form-grid compact">
-                <label>Type
-                  <select id="rate-snapshot-projection-current-mode">
-                    <option value="latest_window">Latest stable LS window</option>
-                    <option value="range">Lumi range</option>
-                    <option value="single">Specific LS</option>
-                    <option value="hardcoded">Hardcoded lumi</option>
-                  </select>
-                </label>
-                <label data-snapshot-projection-mode="current" data-modes="latest_window">LS window
-                  <input id="rate-snapshot-projection-current-window" type="number" min="1" value="20" />
-                </label>
-                <label data-snapshot-projection-mode="current" data-modes="range hardcoded">LS min
-                  <input id="rate-snapshot-projection-current-ls-min" type="number" min="1" value="1" />
-                </label>
-                <label data-snapshot-projection-mode="current" data-modes="range hardcoded">LS max
-                  <input id="rate-snapshot-projection-current-ls-max" type="number" min="1" value="20" />
-                </label>
-                <label data-snapshot-projection-mode="current" data-modes="single">Specific LS
-                  <input id="rate-snapshot-projection-current-single-ls" type="number" min="1" value="1" />
-                </label>
-                <label data-snapshot-projection-mode="current" data-modes="hardcoded">Hardcoded init lumi
-                  <input id="rate-snapshot-projection-current-hardcoded-lumi" type="number" min="0" step="any" value="0" />
-                </label>
-                <label class="check-control form-check">
-                  <input id="rate-snapshot-projection-include-unstable" type="checkbox" checked />
-                  Include unstable LS
-                </label>
-              </div>
-            </section>
           </div>
           <div id="rate-snapshot-metrics" class="metric-grid compact-metrics"></div>
           <div class="snapshot-summary-grid">
@@ -650,6 +662,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=79"></script>
+    <script src="/static/app.js?v=84"></script>
   </body>
 </html>

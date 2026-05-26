@@ -1476,6 +1476,10 @@ tbody tr:hover {
   overflow: hidden;
 }
 
+.snapshot-card-wide {
+  grid-column: 1 / -1;
+}
+
 .snapshot-card-head {
   border-bottom: 1px solid var(--border-muted);
   padding: 12px 14px;
@@ -1552,9 +1556,9 @@ tbody tr:hover {
   font-size: 14px;
   font-weight: 700;
   left: 0;
-  line-height: 1.4;
-  max-width: min(360px, 70vw);
-  min-width: 230px;
+  line-height: 1.45;
+  max-width: min(340px, calc(100vw - 28px));
+  min-width: 220px;
   opacity: 0;
   padding: 12px 14px;
   pointer-events: none;
@@ -1564,13 +1568,48 @@ tbody tr:hover {
   transform: translateY(6px);
   transition: opacity 120ms ease, transform 120ms ease;
   white-space: normal;
-  word-break: keep-all;
-  z-index: 10000;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  z-index: 999999;
 }
 
 .floating-tooltip.visible {
   opacity: 1;
   transform: translateY(0);
+}
+
+.floating-tooltip::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: #111821;
+  border-left: 1px solid #3a4655;
+  border-top: 1px solid #3a4655;
+  transform: rotate(45deg);
+}
+
+.floating-tooltip[data-placement="bottom"]::after {
+  top: -7px;
+  left: 22px;
+}
+
+.floating-tooltip[data-placement="top"]::after {
+  bottom: -7px;
+  left: 22px;
+  transform: rotate(225deg);
+}
+
+.floating-tooltip[data-placement="right"]::after {
+  left: -7px;
+  top: 18px;
+  transform: rotate(-45deg);
+}
+
+.floating-tooltip[data-placement="left"]::after {
+  right: -7px;
+  top: 18px;
+  transform: rotate(135deg);
 }
 
 @media (max-width: 1100px) {

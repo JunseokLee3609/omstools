@@ -660,6 +660,12 @@ def api_rate_snapshot():
     run = _int_arg("run", None, minimum=1)
     reference_run = _int_arg("reference_run", None, minimum=1)
     rate_field = _default_rate_field(request.args.get("rate_field"))
+    stable_only = str(request.args.get("stable_only", "0") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     ls_mode = str(request.args.get("ls_mode", "run") or "run").strip().lower()
     reference_ls_mode = str(
@@ -669,6 +675,8 @@ def api_rate_snapshot():
     if run is None:
         current = oms_data.get_current_global_run()
         run = int(current["run_number"])
+
+    summary = oms_data.get_run_summary(int(run))
 
     def parse_ls_selection(mode, min_key, max_key, single_key):
         ls_min = None
@@ -688,12 +696,18 @@ def api_rate_snapshot():
             single_ls = _int_arg(single_key, None, minimum=1)
             ls_min = single_ls
             ls_max = single_ls
+        elif mode == "latest_window":
+            window = _int_arg("ls_window", config.DEFAULT_CURRENT_LS_WINDOW, minimum=1)
+            last_ls = int(summary.get("last_lumisection_number") or 0)
+            stable_ls = _latest_stable_lumisection(int(run), last_ls)
+            ls_max = stable_ls or last_ls or None
+            ls_min = max(1, int(ls_max) - int(window) + 1) if ls_max else None
         else:
             mode = "run"
         return mode, ls_min, ls_max
 
     def selection_label(mode, ls_min_value, ls_max_value):
-        if mode == "range":
+        if mode in {"range", "latest_window"}:
             return f"LS {ls_min_value or '-'}-{ls_max_value or '-'}"
         if mode == "single":
             return f"LS {ls_min_value or '-'}"
@@ -713,6 +727,10 @@ def api_rate_snapshot():
         )
         if ls_rates.empty:
             return rates, points
+        if stable_only and "beams_stable" in ls_rates.columns:
+            ls_rates = ls_rates[ls_rates["beams_stable"] == True].copy()
+            if ls_rates.empty:
+                return rates, points
         ls_rates["rate"] = pd.to_numeric(ls_rates["rate"], errors="coerce")
         grouped = ls_rates.dropna(subset=["rate"]).groupby("pathname")["rate"].agg(["mean", "count"])
         rates = {str(pathname): float(row["mean"]) for pathname, row in grouped.iterrows()}
@@ -732,7 +750,6 @@ def api_rate_snapshot():
         "reference_ls",
     )
 
-    summary = oms_data.get_run_summary(int(run))
     lumi = oms_data.get_lumi_summary(int(run), ls_min, ls_max)
     table = oms_data.get_l1_prescale_table(int(run))
     l1_summary = oms_data.get_l1_trigger_summary(int(run))
@@ -751,7 +768,7 @@ def api_rate_snapshot():
 
     selected_rates = {}
     selected_points = {}
-    if ls_mode in {"range", "single"}:
+    if ls_mode in {"range", "single", "latest_window"}:
         selected_rates, selected_points = averaged_ls_rates(
             int(run),
             monitoring_seeds,
@@ -769,7 +786,7 @@ def api_rate_snapshot():
             reference_ls_min,
             reference_ls_max,
         )
-        if reference_ls_mode in {"range", "single"}:
+        if reference_ls_mode in {"range", "single", "latest_window"}:
             reference_rates, reference_points = averaged_ls_rates(
                 int(reference_run),
                 monitoring_seeds,
@@ -797,7 +814,7 @@ def api_rate_snapshot():
     rows = []
     for row in _df_records(table):
         name = row.get("name")
-        selected_rate = selected_rates.get(str(name)) if ls_mode in {"range", "single"} else row.get(rate_field)
+        selected_rate = selected_rates.get(str(name)) if ls_mode in {"range", "single", "latest_window"} else row.get(rate_field)
         reference_rate = reference_rates.get(str(name)) if reference_run is not None else None
         selected_rate_num = _float_or_none(selected_rate)
         reference_rate_num = _float_or_none(reference_rate)
@@ -806,7 +823,7 @@ def api_rate_snapshot():
             raw_ratio = selected_rate_num / reference_rate_num
         rows.append(
             {
-                "current_run": run_info.get("run_number"),
+                "current_run": summary.get("run_number") or int(run),
                 "bit": row.get("bit"),
                 "name": name,
                 "rate": selected_rate,
@@ -814,10 +831,10 @@ def api_rate_snapshot():
                 "raw_ratio": raw_ratio,
                 "rate_field": rate_field,
                 "rate_label": rate_label,
-                "points": selected_points.get(str(name)) if ls_mode in {"range", "single"} else None,
+                "points": selected_points.get(str(name)) if ls_mode in {"range", "single", "latest_window"} else None,
                 "reference_points": (
                     reference_points.get(str(name))
-                    if reference_run is not None and reference_ls_mode in {"range", "single"}
+                    if reference_run is not None and reference_ls_mode in {"range", "single", "latest_window"}
                     else None
                 ),
                 "initial_prescale": row.get("initial_prescale"),
@@ -835,6 +852,7 @@ def api_rate_snapshot():
                 "ls_min": ls_min,
                 "ls_max": ls_max,
                 "label": selection_label(ls_mode, ls_min, ls_max),
+                "stable_only": stable_only,
             },
             "rate_field": rate_field,
             "rate_label": rate_label,
