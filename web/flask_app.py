@@ -50,6 +50,18 @@ def _clean_value(value):
     return value
 
 
+def _float_or_none(value):
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return number
+
+
 def _public_run_summary(summary):
     keys = [
         "run_number",
@@ -132,8 +144,16 @@ def _resolve_trigger_selection(value):
     selection = str(value or "").strip()
     if not selection or selection.upper() == "ALL" or selection == "*":
         return [], "ALL L1 seeds", True
-    triggers = oms_data.load_trigger_list(selection)
-    return triggers, selection, False
+    path = Path(selection).expanduser()
+    if path.exists() or selection.endswith(".txt"):
+        triggers = oms_data.load_trigger_list(selection)
+        return triggers, selection, False
+    triggers = [
+        item.strip()
+        for item in re.split(r"[,\s]+", selection)
+        if item and item.strip()
+    ]
+    return triggers, "inline trigger list", False
 
 
 def _monitoring_seed_file():
@@ -174,6 +194,8 @@ def _default_rate_field(value=None):
 
 
 PROJECTION_SETTING_KEYS = {
+    "trigger_file",
+    "rate_field",
     "reference_run",
     "reference_lumi_mode",
     "reference_ls_min",
@@ -633,6 +655,198 @@ def api_l1_prescale_table():
     )
 
 
+@app.route("/api/rate-snapshot")
+def api_rate_snapshot():
+    run = _int_arg("run", None, minimum=1)
+    reference_run = _int_arg("reference_run", None, minimum=1)
+    rate_field = _default_rate_field(request.args.get("rate_field"))
+
+    ls_mode = str(request.args.get("ls_mode", "run") or "run").strip().lower()
+    reference_ls_mode = str(
+        request.args.get("reference_ls_mode", "run") or "run"
+    ).strip().lower()
+
+    if run is None:
+        current = oms_data.get_current_global_run()
+        run = int(current["run_number"])
+
+    def parse_ls_selection(mode, min_key, max_key, single_key):
+        ls_min = None
+        ls_max = None
+        if mode == "range":
+            ls_min_value = _int_arg(min_key, None, minimum=1)
+            ls_max_value = _int_arg(max_key, None, minimum=1)
+            if (
+                ls_min_value is not None
+                and ls_max_value is not None
+                and ls_min_value > ls_max_value
+            ):
+                ls_min_value, ls_max_value = ls_max_value, ls_min_value
+            ls_min = ls_min_value
+            ls_max = ls_max_value
+        elif mode == "single":
+            single_ls = _int_arg(single_key, None, minimum=1)
+            ls_min = single_ls
+            ls_max = single_ls
+        else:
+            mode = "run"
+        return mode, ls_min, ls_max
+
+    def selection_label(mode, ls_min_value, ls_max_value):
+        if mode == "range":
+            return f"LS {ls_min_value or '-'}-{ls_max_value or '-'}"
+        if mode == "single":
+            return f"LS {ls_min_value or '-'}"
+        return "Run summary"
+
+    def averaged_ls_rates(target_run, seeds, ls_min_value, ls_max_value):
+        rates = {}
+        points = {}
+        if not seeds:
+            return rates, points
+        ls_rates = oms_data.get_l1_ls_rates(
+            int(target_run),
+            seeds,
+            ls_min_value,
+            ls_max_value,
+            rate_field,
+        )
+        if ls_rates.empty:
+            return rates, points
+        ls_rates["rate"] = pd.to_numeric(ls_rates["rate"], errors="coerce")
+        grouped = ls_rates.dropna(subset=["rate"]).groupby("pathname")["rate"].agg(["mean", "count"])
+        rates = {str(pathname): float(row["mean"]) for pathname, row in grouped.iterrows()}
+        points = {str(pathname): int(row["count"]) for pathname, row in grouped.iterrows()}
+        return rates, points
+
+    ls_mode, ls_min, ls_max = parse_ls_selection(
+        ls_mode,
+        "ls_min",
+        "ls_max",
+        "ls",
+    )
+    reference_ls_mode, reference_ls_min, reference_ls_max = parse_ls_selection(
+        reference_ls_mode,
+        "reference_ls_min",
+        "reference_ls_max",
+        "reference_ls",
+    )
+
+    summary = oms_data.get_run_summary(int(run))
+    lumi = oms_data.get_lumi_summary(int(run), ls_min, ls_max)
+    table = oms_data.get_l1_prescale_table(int(run))
+    l1_summary = oms_data.get_l1_trigger_summary(int(run))
+    deadtimes = oms_data.get_deadtime_summary(int(run))
+    monitoring_path = _monitoring_seed_file()
+    monitoring_seeds = oms_data.load_trigger_list(monitoring_path) if monitoring_path.exists() else []
+
+    if not table.empty and monitoring_seeds:
+        wanted = {seed.strip() for seed in monitoring_seeds if seed.strip()}
+        table = table[table["name"].isin(wanted)].copy()
+
+    rate_label = next(
+        (label for label, field in config.RATE_FIELD_OPTIONS.items() if field == rate_field),
+        rate_field,
+    )
+
+    selected_rates = {}
+    selected_points = {}
+    if ls_mode in {"range", "single"}:
+        selected_rates, selected_points = averaged_ls_rates(
+            int(run),
+            monitoring_seeds,
+            ls_min,
+            ls_max,
+        )
+
+    reference_payload = None
+    reference_rates = {}
+    reference_points = {}
+    if reference_run is not None:
+        reference_summary = oms_data.get_run_summary(int(reference_run))
+        reference_lumi = oms_data.get_lumi_summary(
+            int(reference_run),
+            reference_ls_min,
+            reference_ls_max,
+        )
+        if reference_ls_mode in {"range", "single"}:
+            reference_rates, reference_points = averaged_ls_rates(
+                int(reference_run),
+                monitoring_seeds,
+                reference_ls_min,
+                reference_ls_max,
+            )
+        else:
+            reference_table = oms_data.get_l1_prescale_table(int(reference_run))
+            for reference_row in _df_records(reference_table):
+                reference_name = reference_row.get("name")
+                if reference_name:
+                    reference_rates[str(reference_name)] = reference_row.get(rate_field)
+
+        reference_payload = {
+            "run": _public_run_summary(reference_summary),
+            "lumi": reference_lumi,
+            "selection": {
+                "mode": reference_ls_mode,
+                "ls_min": reference_ls_min,
+                "ls_max": reference_ls_max,
+                "label": selection_label(reference_ls_mode, reference_ls_min, reference_ls_max),
+            },
+        }
+
+    rows = []
+    for row in _df_records(table):
+        name = row.get("name")
+        selected_rate = selected_rates.get(str(name)) if ls_mode in {"range", "single"} else row.get(rate_field)
+        reference_rate = reference_rates.get(str(name)) if reference_run is not None else None
+        selected_rate_num = _float_or_none(selected_rate)
+        reference_rate_num = _float_or_none(reference_rate)
+        raw_ratio = None
+        if selected_rate_num is not None and reference_rate_num not in (None, 0):
+            raw_ratio = selected_rate_num / reference_rate_num
+        rows.append(
+            {
+                "current_run": run_info.get("run_number"),
+                "bit": row.get("bit"),
+                "name": name,
+                "rate": selected_rate,
+                "reference_rate": reference_rate,
+                "raw_ratio": raw_ratio,
+                "rate_field": rate_field,
+                "rate_label": rate_label,
+                "points": selected_points.get(str(name)) if ls_mode in {"range", "single"} else None,
+                "reference_points": (
+                    reference_points.get(str(name))
+                    if reference_run is not None and reference_ls_mode in {"range", "single"}
+                    else None
+                ),
+                "initial_prescale": row.get("initial_prescale"),
+                "final_prescale": row.get("final_prescale"),
+            }
+        )
+
+    return jsonify(
+        {
+            "run": _public_run_summary(summary),
+            "lumi": lumi,
+            "reference": reference_payload,
+            "selection": {
+                "mode": ls_mode,
+                "ls_min": ls_min,
+                "ls_max": ls_max,
+                "label": selection_label(ls_mode, ls_min, ls_max),
+            },
+            "rate_field": rate_field,
+            "rate_label": rate_label,
+            "l1_triggers": _df_records(l1_summary),
+            "deadtimes": _df_records(deadtimes),
+            "monitoring_path": str(monitoring_path),
+            "monitoring_count": len(monitoring_seeds),
+            "rows": rows,
+        }
+    )
+
+
 @app.route("/api/exports/<path:filename>")
 def api_export_file(filename):
     safe_name = os.path.basename(filename)
@@ -872,7 +1086,7 @@ def api_dashboard_reference_ratio():
         ls_max=current_last_ls,
         rate_field=rate_field,
     )
-    current_df = _filtered_plot_frame(current_df, stable_only=True)
+    current_df = _filtered_plot_frame(current_df, stable_only=False)
     current_df = _trim_latest_lumisections(current_df, max_lumisections)
 
     reference_lumi_stats = _lumi_stats_from_frame(reference_df)
@@ -902,7 +1116,7 @@ def api_dashboard_reference_ratio():
         "current_ls_max": current_lumisections[-1] if current_lumisections else None,
         "current_inst_lumi_avg": current_lumi_stats["average"],
         "current_inst_lumi_latest": current_lumi_stats["latest"],
-        "stable_only": True,
+        "stable_only": False,
         "max_lumisections": int(max_lumisections),
         "trigger_count": len(triggers),
         "rate_field": rate_field,
@@ -1093,9 +1307,10 @@ def api_projection():
 @app.route("/api/rate-plots", methods=["POST"])
 def api_rate_plots():
     payload = request.get_json(silent=True) or {}
+    trigger_file = payload.get("trigger_file") or str(_monitoring_seed_file())
     rate_field = _default_rate_field(payload.get("rate_field"))
     stable_only = bool(payload.get("stable_only", True))
-    triggers = oms_data.load_trigger_list(_monitoring_seed_file())
+    triggers, trigger_label, all_triggers = _resolve_trigger_selection(trigger_file)
 
     reference_run = _payload_int(payload, "reference_run", minimum=1)
     comparison_runs = _payload_run_list(payload, "current_runs")
@@ -1153,7 +1368,8 @@ def api_rate_plots():
             "context": {
                 "rate_field": rate_field,
                 "stable_only": stable_only,
-                "trigger_file": str(_monitoring_seed_file()),
+                "trigger_file": trigger_label,
+                "all_triggers": all_triggers,
                 "trigger_count": len(triggers),
                 "reference_run": int(reference_run),
                 "reference_lumi_mode": "all_lumisections",

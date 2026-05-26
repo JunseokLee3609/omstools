@@ -20,8 +20,9 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=63" />
+    <link rel="stylesheet" href="/static/styles.css?v=72" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   </head>
   <body>
     <aside class="sidebar">
@@ -40,6 +41,9 @@
         <button class="nav-item" data-page="projection" data-title="Bunch Projection">
           <i class="fa-solid fa-chart-line"></i><span>Bunch Projection</span>
         </button>
+        <button class="nav-item" data-page="snapshot" data-title="Rate Snapshot">
+          <i class="fa-solid fa-clipboard-list"></i><span>Rate Snapshot</span>
+        </button>
         <button class="nav-item" data-page="table" data-title="L1 Prescale Table">
           <i class="fa-solid fa-table"></i><span>L1 Prescale Table</span>
         </button>
@@ -55,17 +59,16 @@
       </nav>
 
       <div class="sidebar-section">
-        <label for="trigger-file">Seed selection</label>
+        <label for="trigger-file">L1 seed selection</label>
         <input id="trigger-file" type="text" placeholder="ALL or examples/MuonTriggers.txt" />
         <div class="seed-preset-row">
           <button id="seed-all" class="preset-button" type="button">All L1</button>
           <button id="seed-monitoring" class="preset-button active" type="button">Monitoring</button>
         </div>
-        <p class="field-hint">Applies to Dashboard, Bunch Projection, and L1 Prescale Table. Rate plots below Bunch Projection always use Monitoring seeds.</p>
       </div>
 
       <div class="sidebar-section">
-        <label for="rate-field">L1 rate field</label>
+        <label for="rate-field">Rate field</label>
         <select id="rate-field"></select>
       </div>
 
@@ -129,7 +132,7 @@
           <div class="panel-head">
             <div>
               <h3>Current Run Reference Ratio</h3>
-              <p id="dashboard-ratio-summary">Set the reference run and LS range, then compare the current stable LS.</p>
+              <p id="dashboard-ratio-summary">Set the reference run and LS range, then compare the current recorded LS.</p>
             </div>
             <div class="panel-actions">
               <label class="check-control">
@@ -137,7 +140,7 @@
                 Auto refresh
               </label>
               <div class="inline-control">
-                <label for="dashboard-ratio-max-ls">Max stable LS</label>
+                <label for="dashboard-ratio-max-ls">Max LS</label>
                 <input id="dashboard-ratio-max-ls" type="number" min="1" value="120" />
               </div>
               <button id="load-dashboard-ratio" class="shell-button" type="button">Load plot</button>
@@ -282,14 +285,214 @@
           <div class="panel-head">
             <div>
               <h3>Reference/Comparison Rate Plots</h3>
-              <p>Uses the Reference plus every added comparison above. Seeds are fixed to the Monitoring seed list.</p>
+              <p>Uses the Reference plus every added comparison above with the selected L1 seed list.</p>
             </div>
             <div class="monitoring-actions">
+              <label class="inline-control">
+                <span>Sheet</span>
+                <select id="rate-sheet-layout">
+                  <option value="4x4" selected>4x4</option>
+                  <option value="2x2">2x2</option>
+                </select>
+              </label>
+              <button id="download-rate-png-sheet" class="ghost-button" type="button">PNG sheet</button>
+              <button id="download-rate-pdf-sheet" class="ghost-button" type="button">PDF sheet</button>
               <button id="run-rate-plots" class="primary-button" type="button">Draw plots</button>
             </div>
           </div>
           <div id="rate-plot-grid" class="rate-plot-grid">
             <div class="seed-empty">Click Draw plots.</div>
+          </div>
+        </section>
+      </section>
+
+      <section id="page-snapshot" class="page">
+        <header class="hero compact">
+          <div>
+            <div class="eyebrow">Monitoring spreadsheet</div>
+            <h2>Rate Snapshot</h2>
+            <p>Run-level monitoring seed rates with optional raw reference ratio.</p>
+          </div>
+        </header>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Monitoring Seed Rates</h3>
+              <p id="rate-snapshot-summary">Choose current and reference runs, then process the selected rate-field values.</p>
+            </div>
+            <div class="panel-actions snapshot-actions">
+              <label class="inline-control">
+                <span>Current run</span>
+                <input id="rate-snapshot-run" type="number" min="1" placeholder="current" />
+              </label>
+              <label class="inline-control">
+                <span>Current LS</span>
+                <select id="rate-snapshot-ls-mode">
+                  <option value="run">Run summary</option>
+                  <option value="range">LS range</option>
+                  <option value="single">Specific LS</option>
+                </select>
+              </label>
+              <label class="inline-control" data-snapshot-ls-mode="range">
+                <span>Min</span>
+                <input id="rate-snapshot-ls-min" type="number" min="1" value="1" />
+              </label>
+              <label class="inline-control" data-snapshot-ls-mode="range">
+                <span>Max</span>
+                <input id="rate-snapshot-ls-max" type="number" min="1" value="20" />
+              </label>
+              <label class="inline-control" data-snapshot-ls-mode="single">
+                <span>LS</span>
+                <input id="rate-snapshot-single-ls" type="number" min="1" value="1" />
+              </label>
+              <label class="inline-control reference-control">
+                <span>Reference run</span>
+                <input id="rate-snapshot-reference-run" type="number" min="1" placeholder="optional" />
+              </label>
+              <label class="inline-control reference-control">
+                <span>Reference LS</span>
+                <select id="rate-snapshot-reference-ls-mode">
+                  <option value="run">Run summary</option>
+                  <option value="range">LS range</option>
+                  <option value="single">Specific LS</option>
+                </select>
+              </label>
+              <label class="inline-control reference-control" data-snapshot-reference-ls-mode="range">
+                <span>Ref min</span>
+                <input id="rate-snapshot-reference-ls-min" type="number" min="1" value="1" />
+              </label>
+              <label class="inline-control reference-control" data-snapshot-reference-ls-mode="range">
+                <span>Ref max</span>
+                <input id="rate-snapshot-reference-ls-max" type="number" min="1" value="20" />
+              </label>
+              <label class="inline-control reference-control" data-snapshot-reference-ls-mode="single">
+                <span>Ref LS</span>
+                <input id="rate-snapshot-reference-single-ls" type="number" min="1" value="1" />
+              </label>
+              <label class="check-control snapshot-toggle">
+                <input id="rate-snapshot-do-projection" type="checkbox" />
+                Do projection
+              </label>
+              <button id="load-rate-snapshot" class="primary-button compact-action" type="button">Process snapshot</button>
+              <button id="export-rate-snapshot-csv" class="shell-button" type="button">Export CSV</button>
+            </div>
+          </div>
+          <div id="rate-snapshot-projection-options" class="snapshot-projection-options" hidden>
+            <section class="snapshot-projection-block">
+              <h4>Reference projection</h4>
+              <div class="form-grid compact">
+                <label>Type
+                  <select id="rate-snapshot-projection-reference-mode">
+                    <option value="range">Lumi range</option>
+                    <option value="single">Specific LS</option>
+                    <option value="hardcoded">Hardcoded lumi</option>
+                  </select>
+                </label>
+                <label data-snapshot-projection-mode="reference" data-modes="range hardcoded">LS min
+                  <input id="rate-snapshot-projection-reference-ls-min" type="number" min="1" value="1" />
+                </label>
+                <label data-snapshot-projection-mode="reference" data-modes="range hardcoded">LS max
+                  <input id="rate-snapshot-projection-reference-ls-max" type="number" min="1" value="20" />
+                </label>
+                <label data-snapshot-projection-mode="reference" data-modes="single">Specific LS
+                  <input id="rate-snapshot-projection-reference-single-ls" type="number" min="1" value="1" />
+                </label>
+                <label data-snapshot-projection-mode="reference" data-modes="hardcoded">Hardcoded init lumi
+                  <input id="rate-snapshot-projection-reference-hardcoded-lumi" type="number" min="0" step="any" value="0" />
+                </label>
+              </div>
+            </section>
+            <section class="snapshot-projection-block">
+              <h4>Comparison projection</h4>
+              <div class="form-grid compact">
+                <label>Type
+                  <select id="rate-snapshot-projection-current-mode">
+                    <option value="latest_window">Latest stable LS window</option>
+                    <option value="range">Lumi range</option>
+                    <option value="single">Specific LS</option>
+                    <option value="hardcoded">Hardcoded lumi</option>
+                  </select>
+                </label>
+                <label data-snapshot-projection-mode="current" data-modes="latest_window">LS window
+                  <input id="rate-snapshot-projection-current-window" type="number" min="1" value="20" />
+                </label>
+                <label data-snapshot-projection-mode="current" data-modes="range hardcoded">LS min
+                  <input id="rate-snapshot-projection-current-ls-min" type="number" min="1" value="1" />
+                </label>
+                <label data-snapshot-projection-mode="current" data-modes="range hardcoded">LS max
+                  <input id="rate-snapshot-projection-current-ls-max" type="number" min="1" value="20" />
+                </label>
+                <label data-snapshot-projection-mode="current" data-modes="single">Specific LS
+                  <input id="rate-snapshot-projection-current-single-ls" type="number" min="1" value="1" />
+                </label>
+                <label data-snapshot-projection-mode="current" data-modes="hardcoded">Hardcoded init lumi
+                  <input id="rate-snapshot-projection-current-hardcoded-lumi" type="number" min="0" step="any" value="0" />
+                </label>
+                <label class="check-control form-check">
+                  <input id="rate-snapshot-projection-include-unstable" type="checkbox" checked />
+                  Include unstable LS
+                </label>
+              </div>
+            </section>
+          </div>
+          <div id="rate-snapshot-metrics" class="metric-grid compact-metrics"></div>
+          <div class="snapshot-summary-grid">
+            <article class="snapshot-card">
+              <div class="snapshot-card-head">
+                <h4>L1 Triggers</h4>
+              </div>
+              <div class="mini-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Trigger</th>
+                      <th>Rate [Hz]</th>
+                      <th>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody id="rate-snapshot-l1-summary">
+                    <tr><td colspan="3">Load a snapshot.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+            <article class="snapshot-card">
+              <div class="snapshot-card-head">
+                <h4>Deadtimes</h4>
+              </div>
+              <div class="mini-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>%</th>
+                      <th>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody id="rate-snapshot-deadtimes">
+                    <tr><td colspan="3">Load a snapshot.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr id="rate-snapshot-table-head">
+                  <th>Current Run</th>
+                  <th>Trigger</th>
+                  <th>Reference Rate [Hz]</th>
+                  <th id="rate-snapshot-rate-head">Rate [Hz]</th>
+                  <th>Raw Ratio</th>
+                  <th>Initial PS</th>
+                  <th>Final PS</th>
+                </tr>
+              </thead>
+              <tbody id="rate-snapshot-table">
+                <tr><td colspan="7">Load a snapshot to populate this table.</td></tr>
+              </tbody>
+            </table>
           </div>
         </section>
       </section>
@@ -447,6 +650,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=63"></script>
+    <script src="/static/app.js?v=79"></script>
   </body>
 </html>

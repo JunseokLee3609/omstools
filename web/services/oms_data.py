@@ -1,5 +1,5 @@
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
@@ -21,12 +21,26 @@ L1_RATE_COLUMNS = [
 L1_PRESCALE_COLUMNS = [
     "bit",
     "name",
+    "mask",
     "pre_dt_before_prescale_rate",
+    "pre_dt_before_prescale_counter",
     "pre_dt_rate",
+    "pre_dt_counter",
     "inferred_prescale",
     "post_dt_rate",
+    "post_dt_counter",
     "post_dt_hlt_rate",
+    "post_dt_hlt_counter",
+    "initial_prescale_index",
+    "initial_prescale_name",
+    "initial_prescale",
+    "final_prescale_index",
+    "final_prescale_name",
+    "final_prescale",
 ]
+
+L1_TRIGGER_SUMMARY_COLUMNS = ["name", "rate", "counter"]
+DEADTIME_COLUMNS = ["name", "percent", "counter"]
 
 
 PathLike = Union[str, Path]
@@ -442,6 +456,8 @@ def get_l1_prescale_table(run: int) -> pd.DataFrame:
         attr = row.get("attributes", {})
         before = attr.get("pre_dt_before_prescale_rate")
         after = attr.get("pre_dt_rate")
+        initial = attr.get("initial_prescale") or {}
+        final = attr.get("final_prescale") or {}
         inferred = None
         try:
             if before is not None and after not in (None, 0):
@@ -452,14 +468,99 @@ def get_l1_prescale_table(run: int) -> pd.DataFrame:
             {
                 "bit": attr.get("bit"),
                 "name": attr.get("name") or attr.get("pathname") or attr.get("algorithm_name"),
+                "mask": attr.get("mask"),
                 "pre_dt_before_prescale_rate": before,
+                "pre_dt_before_prescale_counter": attr.get("pre_dt_before_prescale_counter"),
                 "pre_dt_rate": after,
+                "pre_dt_counter": attr.get("pre_dt_counter"),
                 "inferred_prescale": inferred,
                 "post_dt_rate": attr.get("post_dt_rate"),
+                "post_dt_counter": attr.get("post_dt_counter"),
                 "post_dt_hlt_rate": attr.get("post_dt_hlt_rate"),
+                "post_dt_hlt_counter": attr.get("post_dt_hlt_counter"),
+                "initial_prescale_index": initial.get("prescale_index"),
+                "initial_prescale_name": initial.get("prescale_name"),
+                "initial_prescale": initial.get("prescale"),
+                "final_prescale_index": final.get("prescale_index"),
+                "final_prescale_name": final.get("prescale_name"),
+                "final_prescale": final.get("prescale"),
             }
         )
 
     if not records:
         return pd.DataFrame(columns=L1_PRESCALE_COLUMNS)
     return pd.DataFrame(records).reindex(columns=L1_PRESCALE_COLUMNS)
+
+
+@lru_cache(maxsize=64)
+def get_l1_trigger_summary(run: int) -> pd.DataFrame:
+    oms = _oms()
+    q = oms.omsapi.query("l1triggerrates")
+    q.set_verbose(False)
+    q.set_validation(False)
+    q.filter("run_number", int(run))
+    q.paginate(per_page=1)
+    rows = q.data().json().get("data", [])
+    if not rows:
+        return pd.DataFrame(columns=L1_TRIGGER_SUMMARY_COLUMNS)
+
+    attr = rows[0].get("attributes", {})
+    keys = [
+        ("L1A calibration", "l1a_calibration"),
+        ("L1A physics", "l1a_physics"),
+        ("L1A random", "l1a_random"),
+        ("Total L1A", "l1a_total"),
+        ("PhysicsGeneratedFDL GT", "physics_generated_fdl_gt"),
+        ("PhysicsGeneratedFDL TCDS", "physics_generated_fdl_tcds"),
+        ("Total before deadtime", "total_before_deadtime"),
+        ("Trigger physics beam active", "trigger_physics_beam_active"),
+        ("Trigger physics beam inactive", "trigger_physics_beam_inactive"),
+    ]
+    records = []
+    for name, key in keys:
+        value = attr.get(key) or {}
+        records.append(
+            {
+                "name": name,
+                "rate": value.get("rate"),
+                "counter": value.get("counter"),
+            }
+        )
+    return pd.DataFrame(records).reindex(columns=L1_TRIGGER_SUMMARY_COLUMNS)
+
+
+@lru_cache(maxsize=64)
+def get_deadtime_summary(run: int) -> pd.DataFrame:
+    oms = _oms()
+    q = oms.omsapi.query("deadtimes")
+    q.set_verbose(False)
+    q.set_validation(False)
+    q.filter("run_number", int(run))
+    q.paginate(per_page=1)
+    rows = q.data().json().get("data", [])
+    if not rows:
+        return pd.DataFrame(columns=DEADTIME_COLUMNS)
+
+    attr = rows[0].get("attributes", {})
+    keys = [
+        ("Total", "overall_total_deadtime"),
+        ("TTS", "overall_tts"),
+        ("Trigger Rules", "overall_trigger_rules"),
+        ("Bunch Mask", "overall_bunch_mask"),
+        ("ReTri", "overall_re_tri"),
+        ("APVE", "overall_apve"),
+        ("Calibration", "overall_calibration"),
+        ("Software Pause", "overall_software_pause"),
+        ("Firmware Pause", "overall_firmware_pause"),
+    ]
+    records = []
+    for name, key in keys:
+        value = attr.get(key) or {}
+        records.append(
+            {
+                "name": name,
+                "percent": value.get("percent"),
+                "counter": value.get("counter"),
+            }
+        )
+    return pd.DataFrame(records).reindex(columns=DEADTIME_COLUMNS)

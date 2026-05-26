@@ -8,6 +8,12 @@ const state = {
   activeProjectionIndex: 0,
   comparisons: [],
   ratePlots: null,
+  ratePlotSheetCache: null,
+  ratePlotSheetRevision: 0,
+  rateSnapshot: null,
+  rateSnapshotProjection: null,
+  rateSnapshotMergedRows: [],
+  rateSnapshotView: "snapshot",
   l1PrescaleRows: [],
   l1PrescalePayload: null,
   availableSeeds: [],
@@ -24,6 +30,28 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const PROJECTION_SETTINGS_KEY = "oms_l1_projection_settings_v1";
 const DASHBOARD_REFERENCE_SETTINGS_KEY = "oms_l1_dashboard_reference_settings_v1";
+const RATE_PLOT_SHEETS = {
+  "4x4": {
+    pageWidth: 3600,
+    pageHeight: 2550,
+    margin: 64,
+    headerHeight: 118,
+    gapX: 26,
+    gapY: 26,
+    cols: 4,
+    rows: 4,
+  },
+  "2x2": {
+    pageWidth: 2600,
+    pageHeight: 1900,
+    margin: 70,
+    headerHeight: 126,
+    gapX: 42,
+    gapY: 42,
+    cols: 2,
+    rows: 2,
+  },
+};
 
 function valueOf(selector, fallback = "") {
   const node = $(selector);
@@ -45,6 +73,12 @@ function bind(selector, eventName, handler) {
   if (!node) return null;
   node.addEventListener(eventName, handler);
   return node;
+}
+
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
 }
 
 function fmt(value, digits = 2) {
@@ -105,6 +139,40 @@ function downloadCsv(filename, rows, columns) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function downloadDataUrl(filename, dataUrl) {
+  const link = document.createElement("a");
+  link.href = dataUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = dataUrl;
+  });
+}
+
+function truncateCanvasText(ctx, text, maxWidth) {
+  const clean = String(text || "Rate plot");
+  if (ctx.measureText(clean).width <= maxWidth) return clean;
+  let lo = 0;
+  let hi = clean.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (ctx.measureText(`${clean.slice(0, mid)}...`).width <= maxWidth) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return `${clean.slice(0, lo)}...`;
 }
 
 function projectionCsvColumns() {
@@ -518,7 +586,7 @@ function seedSelectionSummary(data) {
   const defaultFile = String(state.config?.default_trigger_file || "");
   const source = triggerFile === defaultFile
     ? "Monitoring seeds"
-    : (triggerFile.split(/[\\/]/).pop() || "Custom seeds");
+    : (triggerFile.split(/[\\/]/).pop() || "L1 seeds");
   return count > 0 ? `${count} ${source}` : source;
 }
 
@@ -608,9 +676,9 @@ function applyLumisectionDataRange(layout, values = []) {
 function suspiciousRatioItems(rows) {
   const bySeed = new Map();
   (rows || []).forEach((row) => {
-    const ratio = Number(row.ratio);
-    const ls = Number(row.lumisection);
-    if (!Number.isFinite(ratio) || !Number.isFinite(ls)) return;
+    const ratio = finiteNumber(row.ratio);
+    const ls = finiteNumber(row.lumisection);
+    if (ratio === null || ls === null) return;
     if (ratio >= 0.7 && ratio <= 2.0) return;
     const seed = String(row.pathname || "Unknown");
     if (!bySeed.has(seed)) bySeed.set(seed, []);
@@ -643,20 +711,19 @@ function renderSuspiciousReport(selector, rows) {
   }
 
   const total = items.reduce((sum, item) => sum + item.points.length, 0);
-  const shown = items.slice(0, 8).map((item) => {
+  const shown = items.map((item) => {
     const points = item.points.slice(0, 6)
       .map((point) => `(${point.ls}: ${fmt(point.ratio, 3)})`)
       .join(", ");
     const more = item.points.length > 6 ? `, +${item.points.length - 6} more` : "";
     return `<div><span>${escapeHtml(item.seed)}</span>: ${escapeHtml(points + more)}</div>`;
   }).join("");
-  const hidden = items.length > 8 ? `<div class="muted">+${items.length - 8} more triggers</div>` : "";
   node.innerHTML = `
     <div class="suspicious-report-head">
       <strong>Suspicious LS</strong>
-      <span>${total} points outside ratio 0.7-2.0</span>
+      <span>${items.length} triggers, ${total} points outside ratio 0.7-2.0</span>
     </div>
-    <div class="suspicious-list">${shown}${hidden}</div>
+    <div class="suspicious-list">${shown}</div>
   `;
 }
 
@@ -765,7 +832,7 @@ function dashboardRatioSummary(context) {
     : "-";
   return [
     `Reference ${context.reference_run} LS ${refLs}`,
-    `current ${context.current_run} stable LS ${curLs}`,
+    `current ${context.current_run} recorded LS ${curLs}`,
     `${context.trigger_count || 0} monitoring seeds`,
     `avg lumi ${fmtLumi(context.current_inst_lumi_avg)}`,
   ].join(" · ");
@@ -783,9 +850,9 @@ function renderDashboardRatioPlot(data) {
   const yValues = [];
   const xValues = [];
   rows.forEach((row) => {
-    const ls = Number(row.lumisection);
-    const ratio = Number(row.ratio);
-    if (!Number.isFinite(ls) || !Number.isFinite(ratio)) return;
+    const ls = finiteNumber(row.lumisection);
+    const ratio = finiteNumber(row.ratio);
+    if (ls === null || ratio === null) return;
     yValues.push(ratio);
     xValues.push(ls);
     if (!grouped.has(row.pathname)) grouped.set(row.pathname, []);
@@ -899,7 +966,23 @@ async function loadDashboard(options = {}) {
   if (l1TableRun && !l1TableRun.value && data.run.run_number) {
     l1TableRun.placeholder = String(data.run.run_number);
   }
+  const snapshotRun = $("#rate-snapshot-run");
+  if (snapshotRun && !snapshotRun.value && data.run.run_number) {
+    snapshotRun.placeholder = String(data.run.run_number);
+  }
   const lastLs = Number(data.run.last_lumisection_number || 0);
+  if (lastLs > 0) {
+    if (!valueOf("#rate-snapshot-ls-max") || valueOf("#rate-snapshot-ls-max") === "20") {
+      setValue("#rate-snapshot-ls-max", lastLs);
+    }
+    if (!valueOf("#rate-snapshot-single-ls") || valueOf("#rate-snapshot-single-ls") === "1") {
+      setValue("#rate-snapshot-single-ls", lastLs);
+    }
+    if (!valueOf("#rate-snapshot-ls-min") || valueOf("#rate-snapshot-ls-min") === "1") {
+      const windowSize = Math.max(1, Number(valueOf("#ls-window", "20") || 20));
+      setValue("#rate-snapshot-ls-min", Math.max(1, lastLs - windowSize + 1));
+    }
+  }
   if (lastLs > 0) {
     if (!valueOf("#current-ls-max") || valueOf("#current-ls-max") === "20") {
       setValue("#current-ls-max", lastLs);
@@ -930,6 +1013,8 @@ function comparisonFromForm() {
 
 function projectionFormState() {
   return {
+    trigger_file: valueOf("#trigger-file", "ALL"),
+    rate_field: valueOf("#rate-field", state.config?.default_rate_field || "pre_dt_before_prescale_rate"),
     reference_run: valueOf("#reference-run"),
     reference_lumi_mode: valueOf("#reference-lumi-mode", "range"),
     reference_ls_min: valueOf("#reference-ls-min"),
@@ -963,6 +1048,8 @@ function hasProjectionSettings(settings) {
 function applyProjectionSettings(saved) {
   if (!hasProjectionSettings(saved)) return false;
   const fields = {
+    "#trigger-file": saved.trigger_file,
+    "#rate-field": saved.rate_field,
     "#reference-run": saved.reference_run,
     "#reference-lumi-mode": saved.reference_lumi_mode,
     "#reference-ls-min": saved.reference_ls_min,
@@ -1365,6 +1452,8 @@ function sampleStyle(sample) {
 
 function renderRatePlots(rows) {
   const grid = $("#rate-plot-grid");
+  state.ratePlotSheetRevision += 1;
+  state.ratePlotSheetCache = null;
   if (!rows || !rows.length) {
     grid.innerHTML = `<div class="seed-empty">No rate points found for the selected settings.</div>`;
     return;
@@ -1475,6 +1564,207 @@ function renderRatePlots(rows) {
   });
 }
 
+function ratePlotNodes() {
+  return $$("#rate-plot-grid .rate-plot")
+    .filter((node) => node.id && node._fullLayout);
+}
+
+function selectedRatePlotSheetKey() {
+  const key = valueOf("#rate-sheet-layout", "4x4");
+  return RATE_PLOT_SHEETS[key] ? key : "4x4";
+}
+
+function selectedRatePlotSheet() {
+  return RATE_PLOT_SHEETS[selectedRatePlotSheetKey()];
+}
+
+async function exportRatePlotImage(plotNode, width, height, layoutKey) {
+  const large = layoutKey === "2x2";
+  const data = JSON.parse(JSON.stringify(plotNode.data || []));
+  const layout = JSON.parse(JSON.stringify(plotNode.layout || {}));
+  layout.width = width;
+  layout.height = height;
+  layout.autosize = false;
+  layout.title = { text: "" };
+  layout.margin = large
+    ? { l: 92, r: 28, t: 92, b: 82 }
+    : { l: 68, r: 20, t: 66, b: 58 };
+  layout.legend = {
+    ...(layout.legend || {}),
+    orientation: "h",
+    x: 0,
+    y: 1.1,
+    xanchor: "left",
+    yanchor: "bottom",
+    bgcolor: "rgba(15, 21, 30, 0.82)",
+    bordercolor: "#263241",
+    borderwidth: 1,
+    font: { color: "#dce6f2", size: large ? 18 : 13 },
+  };
+  layout.xaxis = {
+    ...(layout.xaxis || {}),
+    title: { text: "Inst luminosity", font: { color: "#dce6f2", size: large ? 20 : 15 } },
+    tickfont: { color: "#dce6f2", size: large ? 18 : 13 },
+  };
+  layout.yaxis = {
+    ...(layout.yaxis || {}),
+    title: { text: "Rate [Hz]", font: { color: "#dce6f2", size: large ? 20 : 15 } },
+    tickfont: { color: "#dce6f2", size: large ? 18 : 13 },
+  };
+
+  const node = document.createElement("div");
+  node.style.position = "fixed";
+  node.style.left = "-10000px";
+  node.style.top = "0";
+  node.style.width = `${width}px`;
+  node.style.height = `${height}px`;
+  document.body.appendChild(node);
+  try {
+    await Plotly.newPlot(node, data, layout, {
+      displayModeBar: false,
+      displaylogo: false,
+      responsive: false,
+      staticPlot: true,
+    });
+    return await Plotly.toImage(node, {
+      format: "png",
+      width,
+      height,
+      scale: 1,
+    });
+  } finally {
+    Plotly.purge(node);
+    node.remove();
+  }
+}
+
+async function buildRatePlotSheetPages() {
+  const plots = ratePlotNodes();
+  if (!plots.length) {
+    throw new Error("Draw rate plots first.");
+  }
+
+  const layoutKey = selectedRatePlotSheetKey();
+  if (
+    state.ratePlotSheetCache?.revision === state.ratePlotSheetRevision
+    && state.ratePlotSheetCache?.layoutKey === layoutKey
+  ) {
+    return state.ratePlotSheetCache.pages;
+  }
+
+  const { pageWidth, pageHeight, margin, headerHeight, gapX, gapY, cols, rows } = selectedRatePlotSheet();
+  const perPage = cols * rows;
+  const cellWidth = Math.floor((pageWidth - margin * 2 - gapX * (cols - 1)) / cols);
+  const cellHeight = Math.floor((pageHeight - margin * 2 - headerHeight - gapY * (rows - 1)) / rows);
+  const pageCount = Math.ceil(plots.length / perPage);
+  const pages = [];
+
+  for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+    setBusy(true, `Building rate plot page ${pageIndex + 1}/${pageCount}...`);
+    await waitForPaint();
+    const canvas = document.createElement("canvas");
+    canvas.width = pageWidth;
+    canvas.height = pageHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#0f151e";
+    ctx.fillRect(0, 0, pageWidth, pageHeight);
+
+    ctx.fillStyle = "#f0f6fc";
+    ctx.font = "700 48px Inter, Arial, sans-serif";
+    ctx.fillText("OMS L1 Rate Plots", margin, 72);
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "500 26px Inter, Arial, sans-serif";
+    ctx.fillText(`${layoutKey} sheet · Page ${pageIndex + 1}/${pageCount} · ${new Date().toLocaleString()}`, margin, 112);
+
+    const chunk = plots.slice(pageIndex * perPage, (pageIndex + 1) * perPage);
+    for (const [chunkIndex, plotNode] of chunk.entries()) {
+      const col = chunkIndex % cols;
+      const row = Math.floor(chunkIndex / cols);
+      const x = margin + col * (cellWidth + gapX);
+      const y = margin + headerHeight + row * (cellHeight + gapY);
+      const titleHeight = layoutKey === "2x2" ? 64 : 46;
+      const plotY = y + titleHeight;
+      const plotHeight = cellHeight - titleHeight;
+
+      ctx.fillStyle = "#111821";
+      ctx.strokeStyle = "#263241";
+      ctx.lineWidth = 2;
+      ctx.fillRect(x, y, cellWidth, cellHeight);
+      ctx.strokeRect(x, y, cellWidth, cellHeight);
+
+      const title = plotNode._fullLayout?.title?.text || plotNode.layout?.title?.text || "Rate plot";
+      ctx.fillStyle = "#f0f6fc";
+      ctx.font = `800 ${layoutKey === "2x2" ? 34 : 25}px Inter, Arial, sans-serif`;
+      ctx.textBaseline = "middle";
+      ctx.fillText(
+        truncateCanvasText(ctx, title, cellWidth - 28),
+        x + 16,
+        y + Math.floor(titleHeight / 2),
+      );
+
+      const dataUrl = await exportRatePlotImage(plotNode, cellWidth, plotHeight, layoutKey);
+      const image = await loadImage(dataUrl);
+      ctx.drawImage(image, x, plotY, cellWidth, plotHeight);
+    }
+    pages.push(canvas.toDataURL("image/png", 0.94));
+  }
+
+  state.ratePlotSheetCache = {
+    revision: state.ratePlotSheetRevision,
+    layoutKey,
+    pages,
+  };
+  return pages;
+}
+
+async function downloadRatePlotPngSheets() {
+  const button = $("#download-rate-png-sheet");
+  const layoutKey = selectedRatePlotSheetKey();
+  setButtonBusy(button, true, "PNG sheet", "Building...");
+  setBusy(true, `Building ${layoutKey} PNG sheet...`);
+  try {
+    const pages = await buildRatePlotSheetPages();
+    pages.forEach((dataUrl, index) => {
+      downloadDataUrl(`rate_plots_${layoutKey}_page_${index + 1}.png`, dataUrl);
+    });
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setButtonBusy(button, false, "PNG sheet", "Building...");
+    setBusy(false);
+  }
+}
+
+async function downloadRatePlotPdfSheet() {
+  const button = $("#download-rate-pdf-sheet");
+  const layoutKey = selectedRatePlotSheetKey();
+  setButtonBusy(button, true, "PDF sheet", "Building...");
+  setBusy(true, `Building ${layoutKey} PDF sheet...`);
+  try {
+    const JsPdf = window.jspdf?.jsPDF;
+    if (!JsPdf) {
+      throw new Error("PDF library was not loaded. Use PNG sheets or reload the page.");
+    }
+    const pages = await buildRatePlotSheetPages();
+    const sheet = selectedRatePlotSheet();
+    const pdfWidth = 1280;
+    const pdfHeight = Math.round(pdfWidth * sheet.pageHeight / sheet.pageWidth);
+    const pdf = new JsPdf({ orientation: "landscape", unit: "pt", format: [pdfWidth, pdfHeight] });
+    const width = pdf.internal.pageSize.getWidth();
+    const height = pdf.internal.pageSize.getHeight();
+    pages.forEach((dataUrl, index) => {
+      if (index > 0) pdf.addPage();
+      pdf.addImage(dataUrl, "PNG", 0, 0, width, height);
+    });
+    pdf.save(`rate_plots_${layoutKey}_${new Date().toISOString().slice(0, 10)}.pdf`);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setButtonBusy(button, false, "PDF sheet", "Building...");
+    setBusy(false);
+  }
+}
+
 async function runRatePlots() {
   const button = $("#run-rate-plots");
   setBusy(true, "Drawing rate plots...");
@@ -1506,7 +1796,7 @@ async function runRatePlots() {
     state.ratePlots = { rows, contexts };
     renderRatePlotContext({
       comparisons: contexts.length,
-      trigger_file: state.config?.default_trigger_file || "Monitoring seeds",
+      trigger_file: valueOf("#trigger-file", "ALL"),
     });
     renderRatePlots(rows);
   } catch (error) {
@@ -1688,6 +1978,430 @@ function renderL1PrescaleTable() {
   `).join("");
 }
 
+function prescaleText(row, prefix) {
+  const value = row[`${prefix}_prescale`];
+  return value === null || value === undefined ? "-" : fmt(value, 3);
+}
+
+const RATE_SNAPSHOT_HELP = {
+  "L1A calibration": "L1 accept rate assigned to calibration triggers.",
+  "L1A physics": "L1 accept rate from physics triggers.",
+  "L1A random": "L1 accept rate from random triggers.",
+  "Total L1A": "Total Level-1 accept rate after all L1 accept categories are combined.",
+  "PhysicsGeneratedFDL GT": "Physics trigger rate generated by the Global Trigger FDL.",
+  "PhysicsGeneratedFDL TCDS": "Physics trigger rate as reported through TCDS.",
+  "Total before deadtime": "Total trigger rate before deadtime losses are applied.",
+  "Trigger physics beam active": "Physics trigger rate while the beam-active condition is true.",
+  "Trigger physics beam inactive": "Physics trigger rate while the beam-active condition is false.",
+  "Total": "Overall deadtime fraction and count.",
+  "TTS": "Deadtime from Trigger Throttling System states.",
+  "Trigger Rules": "Deadtime introduced by trigger rules such as BX spacing limits.",
+  "Bunch Mask": "Deadtime or loss associated with bunch mask vetoes.",
+  "ReTri": "Deadtime from retrigger protection.",
+  "APVE": "Deadtime associated with APV emulation/protection.",
+  "Calibration": "Deadtime from calibration activity.",
+  "Software Pause": "Deadtime caused by software pause conditions.",
+  "Firmware Pause": "Deadtime caused by firmware pause conditions.",
+};
+
+function helpLabel(value) {
+  const label = escapeHtml(value ?? "-");
+  const help = RATE_SNAPSHOT_HELP[value];
+  if (!help) return label;
+  const safeHelp = escapeHtml(help);
+  return `
+    <span class="help-label">
+      <span>${label}</span>
+      <span class="info-dot" tabindex="0" role="note" aria-label="${safeHelp}" data-tooltip="${safeHelp}">i</span>
+    </span>
+  `;
+}
+
+function setupInfoTooltips() {
+  let tooltip = null;
+
+  const ensureTooltip = () => {
+    if (tooltip) return tooltip;
+    tooltip = document.createElement("div");
+    tooltip.className = "floating-tooltip";
+    document.body.appendChild(tooltip);
+    return tooltip;
+  };
+
+  const hideTooltip = () => {
+    if (!tooltip) return;
+    tooltip.classList.remove("visible");
+  };
+
+  const showTooltip = (target) => {
+    const text = target?.dataset?.tooltip;
+    if (!text) return;
+    const tip = ensureTooltip();
+    tip.textContent = text;
+    tip.classList.add("visible");
+
+    const targetBox = target.getBoundingClientRect();
+    const tipBox = tip.getBoundingClientRect();
+    const padding = 14;
+    let left = targetBox.left + targetBox.width / 2 - tipBox.width / 2;
+    let top = targetBox.bottom + 10;
+
+    left = Math.max(padding, Math.min(left, window.innerWidth - tipBox.width - padding));
+    if (top + tipBox.height + padding > window.innerHeight) {
+      top = targetBox.top - tipBox.height - 10;
+    }
+    top = Math.max(padding, top);
+
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+  };
+
+  document.addEventListener("mouseover", (event) => {
+    const target = event.target.closest(".info-dot");
+    if (target) showTooltip(target);
+  });
+  document.addEventListener("focusin", (event) => {
+    const target = event.target.closest(".info-dot");
+    if (target) showTooltip(target);
+  });
+  document.addEventListener("mouseout", (event) => {
+    if (event.target.closest(".info-dot")) hideTooltip();
+  });
+  document.addEventListener("focusout", (event) => {
+    if (event.target.closest(".info-dot")) hideTooltip();
+  });
+  window.addEventListener("scroll", hideTooltip, true);
+  window.addEventListener("resize", hideTooltip);
+}
+
+function renderRateSnapshotSummaryTable(selector, rows, columns) {
+  const body = $(selector);
+  if (!body) return;
+  if (!rows || !rows.length) {
+    body.innerHTML = `<tr><td colspan="${columns.length}">No rows found.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((row) => `
+    <tr>
+      ${columns.map((column) => {
+        const value = row[column.key];
+        const text = column.format === "number"
+          ? fmt(value)
+          : column.format === "integer"
+            ? fmt(value, 0)
+            : escapeHtml(value ?? "-");
+        const className = column.align === "left" ? "" : "num";
+        if (column.help) {
+          return `<td class="${className}">${helpLabel(value)}</td>`;
+        }
+        return `<td class="${className}">${column.format === "text" ? text : escapeHtml(text)}</td>`;
+      }).join("")}
+    </tr>
+  `).join("");
+}
+
+function renderRateSnapshot(payload) {
+  state.rateSnapshot = payload;
+  const rows = payload?.rows || [];
+  const reference = payload?.reference || null;
+  const summary = $("#rate-snapshot-summary");
+  if (summary) {
+    const refText = reference?.run?.run_number ? `, reference ${reference.run.run_number}` : "";
+    summary.textContent = `${rows.length} monitoring seeds for run ${payload?.run?.run_number || "-"}${refText}.`;
+  }
+  const head = $("#rate-snapshot-rate-head");
+  if (head) head.textContent = `${payload?.rate_label || "Rate"} [Hz]`;
+
+  const metrics = $("#rate-snapshot-metrics");
+  if (metrics) {
+    const run = payload?.run || {};
+    const lumi = payload?.lumi || {};
+    const selection = payload?.selection || {};
+    const cards = [
+      metric("Run", run.run_number || "-", run.sequence || "GLOBAL-RUN", "fa-hashtag", "blue"),
+      metric("Fill", run.fill_number || "-", "OMS fill", "fa-circle-nodes", "green"),
+      metric("Last LS", run.last_lumisection_number || "-", "latest lumisection", "fa-clock", "purple"),
+      metric("Selected LS", selection.label || "Run summary", `${lumi.n_lumisections || 0} points`, "fa-layer-group", "blue"),
+      metric("Selected rate", payload?.rate_label || "-", "active rate field", "fa-gauge-high", "blue"),
+      metric("Avg inst lumi", fmtLumi(lumi.average_init_lumi), "selected LS", "fa-chart-line", "gold"),
+      metric("Latest inst lumi", fmtLumi(lumi.latest_init_lumi), `LS ${lumi.latest_lumisection || "-"}`, "fa-bolt", "purple"),
+      metric("L1 key", run.l1_key || "-", `prescale index ${run.initial_prescale_index ?? "-"}`, "fa-key", "green"),
+    ];
+    if (reference) {
+      cards.push(
+        metric(
+          "Reference run",
+          reference.run?.run_number || "-",
+          reference.selection?.label || "Run summary",
+          "fa-code-compare",
+          "blue",
+        ),
+        metric(
+          "Reference lumi",
+          fmtLumi(reference.lumi?.average_init_lumi),
+          `${reference.lumi?.n_lumisections || 0} points`,
+          "fa-chart-simple",
+          "gold",
+        ),
+      );
+    }
+    metrics.innerHTML = cards.join("");
+  }
+
+  renderRateSnapshotSummaryTable("#rate-snapshot-l1-summary", payload?.l1_triggers || [], [
+    { key: "name", format: "text", align: "left", help: true },
+    { key: "rate", format: "number" },
+    { key: "counter", format: "integer" },
+  ]);
+  renderRateSnapshotSummaryTable("#rate-snapshot-deadtimes", payload?.deadtimes || [], [
+    { key: "name", format: "text", align: "left", help: true },
+    { key: "percent", format: "number" },
+    { key: "counter", format: "integer" },
+  ]);
+
+  const body = $("#rate-snapshot-table");
+  if (!body) return;
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="7">No monitoring seed rows found for this run.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((row) => `
+    <tr>
+      <td class="num">${escapeHtml(row.current_run ?? payload?.run?.run_number ?? "-")}</td>
+      <td class="seed" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</td>
+      <td class="num">${fmt(row.reference_rate)}</td>
+      <td class="num">${fmt(row.rate)}</td>
+      <td class="num ${ratioClass(row.raw_ratio)}">${fmt(row.raw_ratio, 3)}</td>
+      <td class="num">${escapeHtml(prescaleText(row, "initial"))}</td>
+      <td class="num">${escapeHtml(prescaleText(row, "final"))}</td>
+    </tr>
+  `).join("");
+}
+
+async function loadRateSnapshot() {
+  const button = $("#load-rate-snapshot");
+  const run = valueOf("#rate-snapshot-run").trim();
+  const lsMode = valueOf("#rate-snapshot-ls-mode", "run");
+  const referenceRun = valueOf("#rate-snapshot-reference-run").trim();
+  const referenceLsMode = valueOf("#rate-snapshot-reference-ls-mode", "run");
+  const params = new URLSearchParams({
+    rate_field: valueOf("#rate-field", state.config?.default_rate_field || "pre_dt_before_prescale_rate"),
+    ls_mode: lsMode,
+  });
+  if (run) params.set("run", run);
+  if (lsMode === "range") {
+    params.set("ls_min", valueOf("#rate-snapshot-ls-min", "1") || "1");
+    params.set("ls_max", valueOf("#rate-snapshot-ls-max", "20") || "20");
+  } else if (lsMode === "single") {
+    params.set("ls", valueOf("#rate-snapshot-single-ls", "1") || "1");
+  }
+  if (referenceRun) {
+    params.set("reference_run", referenceRun);
+    params.set("reference_ls_mode", referenceLsMode);
+    if (referenceLsMode === "range") {
+      params.set("reference_ls_min", valueOf("#rate-snapshot-reference-ls-min", "1") || "1");
+      params.set("reference_ls_max", valueOf("#rate-snapshot-reference-ls-max", "20") || "20");
+    } else if (referenceLsMode === "single") {
+      params.set("reference_ls", valueOf("#rate-snapshot-reference-single-ls", "1") || "1");
+    }
+  }
+  setBusy(true, "Loading rate snapshot...");
+  setButtonBusy(button, true, "Process snapshot", "Loading...");
+  try {
+    await waitForPaint();
+    if (!state.monitoringSeeds.length) {
+      await loadMonitoringSeeds();
+    }
+    const payload = await fetchJson(`/api/rate-snapshot?${params.toString()}`);
+    renderRateSnapshot(payload);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setButtonBusy(button, false, "Process snapshot", "Loading...");
+    setBusy(false);
+  }
+}
+
+function updateRateSnapshotLsControls() {
+  const mode = valueOf("#rate-snapshot-ls-mode", "run");
+  $$('[data-snapshot-ls-mode]').forEach((node) => {
+    node.hidden = node.dataset.snapshotLsMode !== mode;
+  });
+  const referenceMode = valueOf("#rate-snapshot-reference-ls-mode", "run");
+  $$('[data-snapshot-reference-ls-mode]').forEach((node) => {
+    node.hidden = node.dataset.snapshotReferenceLsMode !== referenceMode;
+  });
+}
+
+function rateSnapshotProjectionEnabled() {
+  return $("#rate-snapshot-do-projection")?.checked === true;
+}
+
+function updateRateSnapshotProjectionModeControls(group) {
+  const mode = valueOf(`#rate-snapshot-projection-${group}-mode`, group === "current" ? "latest_window" : "range");
+  $$(`[data-snapshot-projection-mode="${group}"]`).forEach((node) => {
+    const modes = String(node.dataset.modes || "").split(/\s+/).filter(Boolean);
+    node.hidden = !modes.includes(mode);
+  });
+}
+
+function updateRateSnapshotProjectionControls() {
+  const enabled = rateSnapshotProjectionEnabled();
+  const wrap = $("#rate-snapshot-projection-options");
+  if (wrap) wrap.hidden = !enabled;
+  if (!enabled) return;
+  updateRateSnapshotProjectionModeControls("reference");
+  updateRateSnapshotProjectionModeControls("current");
+}
+
+function seedRateSnapshotProjectionDefaults() {
+  const currentMode = valueOf("#rate-snapshot-ls-mode", "run");
+  if (currentMode === "range") {
+    setValue("#rate-snapshot-projection-current-mode", "range");
+    setValue("#rate-snapshot-projection-current-ls-min", valueOf("#rate-snapshot-ls-min", "1"));
+    setValue("#rate-snapshot-projection-current-ls-max", valueOf("#rate-snapshot-ls-max", "20"));
+  } else if (currentMode === "single") {
+    setValue("#rate-snapshot-projection-current-mode", "single");
+    setValue("#rate-snapshot-projection-current-single-ls", valueOf("#rate-snapshot-single-ls", "1"));
+  } else {
+    setValue("#rate-snapshot-projection-current-mode", "latest_window");
+    const lastLs = finiteNumber(state.dashboard?.summary?.last_lumisection_number);
+    const windowSize = finiteNumber(valueOf("#ls-window", "20")) || 20;
+    if (lastLs !== null) {
+      setValue("#rate-snapshot-projection-current-window", Math.max(1, Math.min(windowSize, lastLs)));
+    }
+  }
+
+  const referenceMode = valueOf("#rate-snapshot-reference-ls-mode", "run");
+  if (referenceMode === "single") {
+    setValue("#rate-snapshot-projection-reference-mode", "single");
+    setValue("#rate-snapshot-projection-reference-single-ls", valueOf("#rate-snapshot-reference-single-ls", "1"));
+  } else {
+    setValue("#rate-snapshot-projection-reference-mode", "range");
+    setValue("#rate-snapshot-projection-reference-ls-min", valueOf("#rate-snapshot-reference-ls-min", "1"));
+    setValue("#rate-snapshot-projection-reference-ls-max", valueOf("#rate-snapshot-reference-ls-max", "20"));
+  }
+  updateRateSnapshotProjectionControls();
+}
+
+function rateSnapshotProjectionPayload(snapshotPayload) {
+  const currentRun = finiteNumber(valueOf("#rate-snapshot-run"));
+  const referenceRun = finiteNumber(valueOf("#rate-snapshot-reference-run"));
+  if (referenceRun === null) {
+    throw new Error("Reference run is required for projection mode.");
+  }
+
+  return {
+    trigger_file: snapshotPayload?.monitoring_path || valueOf("#trigger-file", "ALL"),
+    rate_field: valueOf("#rate-field", state.config?.default_rate_field || "pre_dt_before_prescale_rate"),
+    reference_run: referenceRun,
+    reference_lumi_mode: valueOf("#rate-snapshot-projection-reference-mode", "range"),
+    reference_ls_min: Number(valueOf("#rate-snapshot-projection-reference-ls-min", "1") || 1),
+    reference_ls_max: Number(valueOf("#rate-snapshot-projection-reference-ls-max", "1") || 1),
+    reference_single_ls: Number(valueOf("#rate-snapshot-projection-reference-single-ls", "1") || 1),
+    reference_hardcoded_lumi: Number(valueOf("#rate-snapshot-projection-reference-hardcoded-lumi", "0") || 0),
+    current_run: currentRun,
+    current_runs: currentRun !== null ? [currentRun] : [],
+    current_lumi_mode: valueOf("#rate-snapshot-projection-current-mode", "latest_window"),
+    current_ls_window: Number(valueOf("#rate-snapshot-projection-current-window", "20") || 20),
+    current_ls_min: Number(valueOf("#rate-snapshot-projection-current-ls-min", "1") || 1),
+    current_ls_max: Number(valueOf("#rate-snapshot-projection-current-ls-max", "1") || 1),
+    current_single_ls: Number(valueOf("#rate-snapshot-projection-current-single-ls", "1") || 1),
+    current_hardcoded_lumi: Number(valueOf("#rate-snapshot-projection-current-hardcoded-lumi", "0") || 0),
+    projection_plot_ls_limit: state.config?.default_projection_plot_ls_limit || 120,
+    stable_only: !$("#rate-snapshot-projection-include-unstable")?.checked,
+  };
+}
+
+function rateSnapshotProjectionSelectionText(context, prefix) {
+  if (!context) return "Run summary";
+  const mode = String(context[`${prefix}_lumi_mode`] || "");
+  const minLs = context[`${prefix}_ls_min`];
+  const maxLs = context[`${prefix}_ls_max`];
+  const points = context[`${prefix}_lumi_points`];
+  if (mode === "single" && minLs !== null && minLs !== undefined) {
+    return `LS ${minLs}`;
+  }
+  if ((mode === "range" || mode === "latest_window") && minLs !== null && minLs !== undefined && maxLs !== null && maxLs !== undefined) {
+    return Number(minLs) === Number(maxLs) ? `LS ${maxLs}` : `LS ${minLs}-${maxLs}`;
+  }
+  if (mode === "hardcoded") return "Hardcoded lumi";
+  if (Number.isFinite(Number(points)) && Number(points) > 0) return `${points} points`;
+  return "Run summary";
+}
+
+function mergeRateSnapshotProjectionRows(snapshotPayload, projectionPayload) {
+  const snapshotRows = snapshotPayload?.rows || [];
+  const projectionRows = projectionPayload?.latest || [];
+  const bySeed = new Map(
+    projectionRows.map((row) => [String(row.pathname || ""), row]).filter(([key]) => key),
+  );
+  const merged = [];
+  const seen = new Set();
+
+  snapshotRows.forEach((row) => {
+    const name = String(row.name || "");
+    const projected = bySeed.get(name);
+    seen.add(name);
+    merged.push({
+      current_run: row.current_run ?? projectionPayload?.context?.current_run ?? snapshotPayload?.run?.run_number,
+      name,
+      bit: projected?.bit ?? row.bit ?? null,
+      ls: projected ? lsWindowText(projected) : "-",
+      points: projected?.n_points ?? row.points ?? null,
+      reference_rate: projected?.reference_rate ?? row.reference_rate ?? null,
+      lumi_ratio: projected?.lumi_ratio ?? null,
+      expected_rate: projected?.expected_rate ?? null,
+      measured_rate: projected?.rate ?? row.rate ?? null,
+      ratio: projected?.ratio ?? null,
+      initial_prescale: row.initial_prescale ?? null,
+      final_prescale: row.final_prescale ?? null,
+    });
+  });
+
+  projectionRows.forEach((row) => {
+    const name = String(row.pathname || "");
+    if (!name || seen.has(name)) return;
+    merged.push({
+      current_run: projectionPayload?.context?.current_run ?? snapshotPayload?.run?.run_number ?? null,
+      name,
+      bit: row.bit ?? null,
+      ls: lsWindowText(row),
+      points: row.n_points ?? null,
+      reference_rate: row.reference_rate ?? null,
+      lumi_ratio: row.lumi_ratio ?? null,
+      expected_rate: row.expected_rate ?? null,
+      measured_rate: row.rate ?? null,
+      ratio: row.ratio ?? null,
+      initial_prescale: null,
+      final_prescale: null,
+    });
+  });
+
+  return merged;
+}
+
+function exportRateSnapshotCsv() {
+  const payload = state.rateSnapshot;
+  const rows = payload?.rows || [];
+  if (!rows.length) {
+    toast("No rate snapshot rows to export yet.");
+    return;
+  }
+  const run = payload?.run?.run_number || "run";
+  const ref = payload?.reference?.run?.run_number;
+  const refSuffix = ref ? `_ref${ref}` : "";
+  downloadCsv(`rate_snapshot_${run}${refSuffix}_${payload.rate_field || "rate"}.csv`, rows, [
+    { key: "current_run", label: "Current Run" },
+    { key: "name", label: "Trigger" },
+    { key: "reference_rate", label: "Reference Rate [Hz]" },
+    { key: "rate", label: `${payload.rate_label || "Rate"} [Hz]` },
+    { key: "raw_ratio", label: "Raw Ratio" },
+    { key: "initial_prescale", label: "Initial Prescale" },
+    { key: "final_prescale", label: "Final Prescale" },
+  ]);
+}
+
 async function loadL1PrescaleTable() {
   const button = $("#load-l1-prescale-table");
   const run = valueOf("#l1-table-run").trim();
@@ -1772,10 +2486,10 @@ function renderDeviationChart(rows) {
     .map(([name, values]) => {
       const points = values
         .map((row) => ({
-          ls: Number(row.lumisection),
-          y: Number(row[metricKey]),
+          ls: finiteNumber(row.lumisection),
+          y: finiteNumber(row[metricKey]),
         }))
-        .filter((point) => Number.isFinite(point.ls) && Number.isFinite(point.y));
+        .filter((point) => point.ls !== null && point.y !== null);
       if (validOnly && !points.length) return null;
       if (!points.length) return null;
       points.forEach((point) => {
@@ -1882,6 +2596,9 @@ function setupNavigation() {
       if (button.dataset.page === "table" && !state.l1PrescaleRows.length) {
         loadL1PrescaleTable().catch((error) => toast(error.message));
       }
+      if (button.dataset.page === "snapshot" && !state.rateSnapshot) {
+        loadRateSnapshot().catch((error) => toast(error.message));
+      }
     });
   });
 }
@@ -1933,6 +2650,15 @@ function setupRefresh() {
   });
   bind("#refresh-exports", "click", () => loadExports().catch((error) => toast(error.message)));
   bind("#load-l1-prescale-table", "click", () => loadL1PrescaleTable().catch((error) => toast(error.message)));
+  updateRateSnapshotLsControls();
+  bind("#rate-snapshot-ls-mode", "change", () => {
+    updateRateSnapshotLsControls();
+  });
+  bind("#rate-snapshot-reference-ls-mode", "change", () => {
+    updateRateSnapshotLsControls();
+  });
+  bind("#load-rate-snapshot", "click", () => loadRateSnapshot().catch((error) => toast(error.message)));
+  bind("#export-rate-snapshot-csv", "click", exportRateSnapshotCsv);
   bind("#l1-table-filter", "input", renderL1PrescaleTable);
   bind("#l1-prescale-monitoring-only", "change", renderL1PrescaleTable);
   bind("#l1-table-run", "keydown", (event) => {
@@ -1944,9 +2670,13 @@ function setupRefresh() {
   bind("#ls-window", "change", () => refreshDashboard({ includeRates: false }).catch((error) => toast(error.message)));
   bind("#rate-field", "change", () => {
     refreshDashboard({ includeRates: false }).catch((error) => toast(error.message));
+    if (state.rateSnapshot) {
+      loadRateSnapshot().catch((error) => toast(error.message));
+    }
   });
   bind("#trigger-file", "change", () => {
     updateSeedPresetState();
+    saveProjectionSettings();
     refreshDashboard({ includeRates: false }).catch((error) => toast(error.message));
   });
   bind("#projection-y-metric", "change", () => {
@@ -1978,6 +2708,7 @@ function setupConfig(config) {
 async function init() {
   setupSidebarToggle();
   setupNavigation();
+  setupInfoTooltips();
   try {
     const config = await fetchJson("/api/config");
     state.config = config;
@@ -1996,6 +2727,11 @@ async function init() {
   }
   bind("#run-projection", "click", runProjection);
   bind("#run-rate-plots", "click", runRatePlots);
+  bind("#rate-sheet-layout", "change", () => {
+    state.ratePlotSheetCache = null;
+  });
+  bind("#download-rate-png-sheet", "click", downloadRatePlotPngSheets);
+  bind("#download-rate-pdf-sheet", "click", downloadRatePlotPdfSheet);
   bind("#clear-state", "click", () => {
     state.projection = null;
     state.projectionResults = [];
