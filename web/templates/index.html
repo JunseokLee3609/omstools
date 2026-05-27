@@ -20,7 +20,7 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=74" />
+    <link rel="stylesheet" href="/static/styles.css?v=75" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   </head>
@@ -128,6 +128,56 @@
 
         <section class="metric-grid" id="run-metrics"></section>
 
+        <section class="panel hi-fill-panel">
+          <div class="panel-head">
+            <div>
+              <h3>HI Fill Run Lumi</h3>
+              <p id="hi-fill-summary">Load 2023-2026 IONS fills and runs to identify useful data-taking runs.</p>
+            </div>
+            <div class="panel-actions hi-fill-controls">
+              <div class="inline-control">
+                <label for="hi-fill-start-year">Start year</label>
+                <input id="hi-fill-start-year" type="number" min="2000" value="2023" />
+              </div>
+              <div class="inline-control">
+                <label for="hi-fill-end-year">End year</label>
+                <input id="hi-fill-end-year" type="number" min="2000" value="2026" />
+              </div>
+              <label class="check-control">
+                <input id="hi-fill-stable-only" type="checkbox" />
+                Stable runs only
+              </label>
+              <label class="check-control">
+                <input id="hi-fill-effective-only" type="checkbox" checked />
+                Show only effective runs
+              </label>
+              <button id="load-hi-fill-runs" class="shell-button" type="button">Load HI runs</button>
+            </div>
+          </div>
+          <div class="table-wrap hi-fill-table-wrap">
+            <table class="hi-fill-table">
+              <thead>
+                <tr>
+                  <th>Fill</th>
+                  <th>Era</th>
+                  <th>Beam</th>
+                  <th>Bunches</th>
+                  <th>Fill lumi</th>
+                  <th>Run lumi</th>
+                  <th>Effective runs</th>
+                  <th>Best run</th>
+                  <th>Runs</th>
+                </tr>
+              </thead>
+              <tbody id="hi-fill-table-body">
+                <tr>
+                  <td colspan="9">Load HI runs to populate this table.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
         <section class="panel dashboard-ratio-panel">
           <div class="panel-head">
             <div>
@@ -226,6 +276,56 @@
               </div>
               <div id="comparison-list" class="comparison-list"></div>
             </section>
+          </div>
+        </section>
+
+        <section class="panel hi-fill-panel">
+          <div class="panel-head">
+            <div>
+              <h3>HI Fill Run Lumi</h3>
+              <p id="projection-hi-fill-summary">Load IONS fills and effective runs for reference/comparison selection.</p>
+            </div>
+            <div class="panel-actions hi-fill-controls">
+              <div class="inline-control">
+                <label for="projection-hi-fill-start-year">Start year</label>
+                <input id="projection-hi-fill-start-year" type="number" min="2000" value="2023" />
+              </div>
+              <div class="inline-control">
+                <label for="projection-hi-fill-end-year">End year</label>
+                <input id="projection-hi-fill-end-year" type="number" min="2000" value="2026" />
+              </div>
+              <label class="check-control">
+                <input id="projection-hi-fill-stable-only" type="checkbox" />
+                Stable runs only
+              </label>
+              <label class="check-control">
+                <input id="projection-hi-fill-effective-only" type="checkbox" checked />
+                Show only effective runs
+              </label>
+              <button id="projection-load-hi-fill-runs" class="shell-button" type="button">Load HI runs</button>
+            </div>
+          </div>
+          <div class="table-wrap hi-fill-table-wrap">
+            <table class="hi-fill-table">
+              <thead>
+                <tr>
+                  <th>Fill</th>
+                  <th>Era</th>
+                  <th>Beam</th>
+                  <th>Bunches</th>
+                  <th>Fill lumi</th>
+                  <th>Run lumi</th>
+                  <th>Effective runs</th>
+                  <th>Best run</th>
+                  <th>Runs</th>
+                </tr>
+              </thead>
+              <tbody id="projection-hi-fill-table-body">
+                <tr>
+                  <td colspan="9">Load HI runs to populate this table.</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </section>
 
@@ -662,6 +762,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=84"></script>
+    <script src="/static/app.js?v=88"></script>
   </body>
 </html>

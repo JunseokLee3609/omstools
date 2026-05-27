@@ -3,6 +3,7 @@ const state = {
   dashboard: null,
   dashboardRatio: null,
   dashboardRatioLoaded: false,
+  hiFillRuns: {},
   projection: null,
   projectionResults: [],
   activeProjectionIndex: 0,
@@ -588,6 +589,109 @@ function seedSelectionSummary(data) {
     ? "Monitoring seeds"
     : (triggerFile.split(/[\\/]/).pop() || "L1 seeds");
   return count > 0 ? `${count} ${source}` : source;
+}
+
+function hiFillSelector(scope, id) {
+  return scope === "projection" ? `#projection-${id}` : `#${id}`;
+}
+
+function hiFillRunParams(scope = "dashboard") {
+  const startYear = Math.max(2000, Number(valueOf(hiFillSelector(scope, "hi-fill-start-year"), "2023") || 2023));
+  const endYear = Math.max(2000, Number(valueOf(hiFillSelector(scope, "hi-fill-end-year"), "2026") || 2026));
+  return new URLSearchParams({
+    start_year: String(Math.min(startYear, endYear)),
+    end_year: String(Math.max(startYear, endYear)),
+    stable_runs_only: $(hiFillSelector(scope, "hi-fill-stable-only"))?.checked ? "1" : "0",
+  });
+}
+
+function hiRunChip(run) {
+  const effective = Boolean(run.effective);
+  const title = [
+    `run ${run.run_number}`,
+    `LS ${run.last_lumisection_number ?? "-"}`,
+    `recorded ${fmtLumi(run.recorded_lumi)}`,
+    effective ? "effective" : "not effective",
+  ].join(" · ");
+  return `
+    <span class="run-chip ${effective ? "effective" : ""}" title="${escapeHtml(title)}">
+      ${escapeHtml(run.run_number)}
+      <b>${fmtLumi(run.recorded_lumi)}</b>
+    </span>
+  `;
+}
+
+function renderHiFillRuns(data, scope = "dashboard") {
+  const body = $(hiFillSelector(scope, "hi-fill-table-body"));
+  const summary = $(hiFillSelector(scope, "hi-fill-summary"));
+  if (!body || !summary) return;
+  state.hiFillRuns[scope] = data;
+  const effectiveOnly = Boolean($(hiFillSelector(scope, "hi-fill-effective-only"))?.checked);
+  const fills = effectiveOnly
+    ? (data?.fills || []).filter((fill) => Number(fill.effective_run_count || 0) > 0)
+    : (data?.fills || []);
+  const shownRunCount = fills.reduce((count, fill) => {
+    const runs = fill.runs || [];
+    return count + (effectiveOnly ? runs.filter((run) => run.effective).length : runs.length);
+  }, 0);
+  summary.textContent = effectiveOnly
+    ? `${fills.length} effective HI fills · ${shownRunCount} effective runs`
+    : `${data.fill_count || 0} HI fills · ${data.run_count || 0} runs · ${data.effective_run_count || 0} effective runs`;
+  if (!fills.length) {
+    body.innerHTML = `<tr><td colspan="9">No ${effectiveOnly ? "effective " : ""}HI fill runs found for this year range.</td></tr>`;
+    return;
+  }
+  body.innerHTML = fills.map((fill) => {
+    const beam = [fill.fill_type_party1, fill.fill_type_party2]
+      .filter(Boolean)
+      .join(" + ") || fill.fill_type_runtime || "-";
+    const fillLumi = fill.recorded_lumi_stablebeams ?? fill.recorded_lumi ?? 0;
+    const runLumi = fill.run_recorded_lumi_sum ?? 0;
+    const bestRun = fill.best_run_number
+      ? `${fill.best_run_number} (${fmtLumi(fill.best_run_recorded_lumi)})`
+      : "-";
+    const visibleRuns = effectiveOnly
+      ? (fill.runs || []).filter((run) => run.effective)
+      : (fill.runs || []);
+    const shownRuns = visibleRuns.slice(0, 8);
+    const moreRuns = Math.max(0, visibleRuns.length - shownRuns.length);
+    const runsHtml = [
+      ...shownRuns.map(hiRunChip),
+      moreRuns ? `<span class="run-chip muted">+${moreRuns}</span>` : "",
+    ].join("");
+    return `
+      <tr class="${fill.effective_run_count ? "hi-fill-effective" : ""}">
+        <td class="num">${escapeHtml(fill.fill_number)}</td>
+        <td>${escapeHtml(fill.era || "-")}</td>
+        <td title="${escapeHtml(fill.injection_scheme || "")}">${escapeHtml(beam)}</td>
+        <td class="num">${escapeHtml(fill.bunches_colliding ?? fill.bunches_target ?? "-")}</td>
+        <td class="num">${fmtLumi(fillLumi)}</td>
+        <td class="num">${fmtLumi(runLumi)}</td>
+        <td><span class="effective-pill">${fill.effective_run_count || 0}/${fill.run_count || 0}</span></td>
+        <td class="num">${escapeHtml(bestRun)}</td>
+        <td class="hi-run-list">${runsHtml || "-"}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+async function loadHiFillRuns(options = {}, scope = "dashboard") {
+  const quiet = Boolean(options.quiet);
+  const button = $(hiFillSelector(scope, "load-hi-fill-runs"));
+  if (!quiet) {
+    setBusy(true, "Loading HI fill runs...");
+    setButtonBusy(button, true, "Load HI runs", "Loading...");
+    await waitForPaint();
+  }
+  try {
+    const data = await fetchJson(`/api/hi-fill-runs?${hiFillRunParams(scope).toString()}`);
+    renderHiFillRuns(data, scope);
+  } finally {
+    if (!quiet) {
+      setButtonBusy(button, false, "Load HI runs", "Loading...");
+      setBusy(false);
+    }
+  }
 }
 
 function parseRunList(value) {
@@ -2985,6 +3089,14 @@ function setupRefresh() {
   bind("#refresh-seconds", "change", schedule);
   bind("#refresh-now", "click", () => refreshDashboard({ includeRates: false }).catch((error) => toast(error.message)));
   bind("#topbar-refresh", "click", () => refreshDashboard({ includeRates: false }).catch((error) => toast(error.message)));
+  bind("#load-hi-fill-runs", "click", () => loadHiFillRuns().catch((error) => toast(error.message)));
+  bind("#hi-fill-effective-only", "change", () => {
+    if (state.hiFillRuns.dashboard) renderHiFillRuns(state.hiFillRuns.dashboard, "dashboard");
+  });
+  bind("#projection-load-hi-fill-runs", "click", () => loadHiFillRuns({}, "projection").catch((error) => toast(error.message)));
+  bind("#projection-hi-fill-effective-only", "change", () => {
+    if (state.hiFillRuns.projection) renderHiFillRuns(state.hiFillRuns.projection, "projection");
+  });
   bind("#load-dashboard-ratio", "click", () => {
     loadDashboardRatioPlot().catch((error) => toast(error.message));
   });

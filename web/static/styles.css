@@ -754,6 +754,66 @@ tbody tr:hover {
   margin-top: 10px;
 }
 
+.hi-fill-panel {
+  margin-top: 24px;
+}
+
+.hi-fill-controls {
+  align-items: flex-end;
+}
+
+.hi-fill-table-wrap {
+  max-height: 560px;
+}
+
+.hi-fill-table {
+  min-width: 1280px;
+}
+
+.hi-fill-effective {
+  background: rgba(35, 134, 54, 0.05);
+}
+
+.hi-run-list {
+  white-space: normal;
+  min-width: 320px;
+}
+
+.run-chip,
+.effective-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 4px 2px 0;
+  padding: 5px 9px;
+  border: 1px solid var(--border-muted);
+  border-radius: 999px;
+  color: #dce6f2;
+  background: #0d141d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.run-chip b {
+  color: var(--text-secondary);
+  font-weight: 750;
+}
+
+.run-chip.effective {
+  border-color: rgba(88, 166, 255, 0.75);
+  color: #79c0ff;
+  background: rgba(30, 111, 214, 0.12);
+}
+
+.run-chip.muted {
+  color: var(--text-secondary);
+}
+
+.effective-pill {
+  border-color: rgba(88, 166, 255, 0.45);
+  color: #79c0ff;
+}
+
 .rate-plot-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));

@@ -1043,6 +1043,25 @@ def api_dashboard():
     )
 
 
+@app.route("/api/hi-fill-runs")
+def api_hi_fill_runs():
+    start_year = _int_arg("start_year", 2023, minimum=2000)
+    end_year = _int_arg("end_year", 2026, minimum=2000)
+    if end_year < start_year:
+        start_year, end_year = end_year, start_year
+    if end_year - start_year > 10:
+        return jsonify({"error": "Year range is too large. Use 10 years or less."}), 400
+
+    stable_runs_only = request.args.get("stable_runs_only", "0") == "1"
+    return jsonify(
+        oms_data.get_hi_fill_run_summary(
+            int(start_year),
+            int(end_year),
+            stable_runs_only=stable_runs_only,
+        )
+    )
+
+
 @app.route("/api/dashboard/reference-ratio", methods=["POST"])
 def api_dashboard_reference_ratio():
     payload = request.get_json(silent=True) or {}

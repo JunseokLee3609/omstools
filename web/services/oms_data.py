@@ -288,6 +288,236 @@ def get_lumi_summary(
     }
 
 
+def _to_float(value: Any, default: float = 0.0) -> float:
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_int_or_none(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fill_details_by_number(start_year: int, end_year: int) -> Dict[int, Dict[str, Any]]:
+    oms = _oms()
+    q = oms.omsapi.query("fills")
+    q.set_verbose(False)
+    q.set_validation(False)
+    q.attrs(
+        [
+            "fill_number",
+            "start_time",
+            "end_time",
+            "era",
+            "fill_type_runtime",
+            "fill_type_party1",
+            "fill_type_party2",
+            "stable_beams",
+            "bunches_colliding",
+            "bunches_target",
+            "injection_scheme",
+            "delivered_lumi",
+            "delivered_lumi_stablebeams",
+            "recorded_lumi",
+            "recorded_lumi_stablebeams",
+            "peak_lumi",
+            "init_lumi",
+            "first_run_number",
+            "last_run_number",
+        ]
+    )
+    q.filter("fill_type_runtime", "IONS")
+    q.filter("start_time", f"{int(start_year)}-01-01T00:00:00Z", "GE")
+    q.filter("start_time", f"{int(end_year) + 1}-01-01T00:00:00Z", "LT")
+    q.sort("fill_number", asc=False)
+
+    details = {}
+    for row in _paged_data(q, per_page=1000):
+        attr = row.get("attributes", {})
+        fill_number = _to_int_or_none(attr.get("fill_number"))
+        if fill_number is None:
+            continue
+        details[fill_number] = {
+            "fill_number": fill_number,
+            "start_time": attr.get("start_time"),
+            "end_time": attr.get("end_time"),
+            "era": attr.get("era"),
+            "fill_type_runtime": attr.get("fill_type_runtime"),
+            "fill_type_party1": attr.get("fill_type_party1"),
+            "fill_type_party2": attr.get("fill_type_party2"),
+            "stable_beams": attr.get("stable_beams"),
+            "bunches_colliding": attr.get("bunches_colliding"),
+            "bunches_target": attr.get("bunches_target"),
+            "injection_scheme": attr.get("injection_scheme"),
+            "delivered_lumi": attr.get("delivered_lumi"),
+            "delivered_lumi_stablebeams": attr.get("delivered_lumi_stablebeams"),
+            "recorded_lumi": attr.get("recorded_lumi"),
+            "recorded_lumi_stablebeams": attr.get("recorded_lumi_stablebeams"),
+            "peak_lumi": attr.get("peak_lumi"),
+            "init_lumi": attr.get("init_lumi"),
+            "first_run_number": attr.get("first_run_number"),
+            "last_run_number": attr.get("last_run_number"),
+        }
+    return details
+
+
+@lru_cache(maxsize=8)
+def get_hi_fill_run_summary(
+    start_year: int = 2023,
+    end_year: int = 2026,
+    stable_runs_only: bool = False,
+) -> Dict[str, Any]:
+    start_year = int(start_year)
+    end_year = int(end_year)
+    if end_year < start_year:
+        start_year, end_year = end_year, start_year
+
+    oms = _oms()
+    q = oms.omsapi.query("runs")
+    q.set_verbose(False)
+    q.set_validation(False)
+    q.attrs(
+        [
+            "run_number",
+            "fill_number",
+            "start_time",
+            "end_time",
+            "duration",
+            "stable_beam",
+            "last_lumisection_number",
+            "l1_rate",
+            "hlt_physics_throughput",
+            "delivered_lumi",
+            "recorded_lumi",
+            "init_lumi",
+            "end_lumi",
+            "era",
+            "sequence",
+            "fill_type_runtime",
+            "fill_type_party1",
+            "fill_type_party2",
+            "l1_key",
+            "hlt_key",
+        ]
+    )
+    q.filter("fill_type_runtime", "IONS")
+    q.filter("start_time", f"{start_year}-01-01T00:00:00Z", "GE")
+    q.filter("start_time", f"{end_year + 1}-01-01T00:00:00Z", "LT")
+    if stable_runs_only:
+        q.filter("stable_beam", True)
+    q.sort("start_time", asc=False)
+    rows = _paged_data(q, per_page=1000)
+
+    fill_details = _fill_details_by_number(start_year, end_year)
+    fills = {}  # type: Dict[int, Dict[str, Any]]
+    run_count = 0
+    stable_run_count = 0
+    effective_run_count = 0
+
+    for row in rows:
+        attr = row.get("attributes", {})
+        run_number = _to_int_or_none(attr.get("run_number") or row.get("id"))
+        fill_number = _to_int_or_none(attr.get("fill_number"))
+        if run_number is None or fill_number is None:
+            continue
+
+        recorded_lumi = _to_float(attr.get("recorded_lumi"))
+        delivered_lumi = _to_float(attr.get("delivered_lumi"))
+        last_ls = _to_int_or_none(attr.get("last_lumisection_number"))
+        stable_beam = bool(attr.get("stable_beam"))
+        effective = stable_beam and recorded_lumi > 0 and (last_ls or 0) > 0
+        run_count += 1
+        stable_run_count += 1 if stable_beam else 0
+        effective_run_count += 1 if effective else 0
+
+        fill = fills.setdefault(
+            fill_number,
+            {
+                **fill_details.get(fill_number, {"fill_number": fill_number}),
+                "run_count": 0,
+                "stable_run_count": 0,
+                "effective_run_count": 0,
+                "run_recorded_lumi_sum": 0.0,
+                "run_delivered_lumi_sum": 0.0,
+                "best_run_number": None,
+                "best_run_recorded_lumi": 0.0,
+                "best_run_last_ls": None,
+                "best_run_l1_rate": None,
+                "runs": [],
+            },
+        )
+
+        run_record = {
+            "run_number": run_number,
+            "start_time": attr.get("start_time"),
+            "end_time": attr.get("end_time"),
+            "duration": attr.get("duration"),
+            "stable_beam": stable_beam,
+            "last_lumisection_number": last_ls,
+            "recorded_lumi": recorded_lumi,
+            "delivered_lumi": delivered_lumi,
+            "init_lumi": attr.get("init_lumi"),
+            "end_lumi": attr.get("end_lumi"),
+            "l1_rate": attr.get("l1_rate"),
+            "hlt_physics_throughput": attr.get("hlt_physics_throughput"),
+            "era": attr.get("era"),
+            "sequence": attr.get("sequence"),
+            "fill_type_runtime": attr.get("fill_type_runtime"),
+            "fill_type_party1": attr.get("fill_type_party1"),
+            "fill_type_party2": attr.get("fill_type_party2"),
+            "l1_key": attr.get("l1_key"),
+            "hlt_key": attr.get("hlt_key"),
+            "effective": effective,
+        }
+        fill["runs"].append(run_record)
+        fill["run_count"] += 1
+        fill["stable_run_count"] += 1 if stable_beam else 0
+        fill["effective_run_count"] += 1 if effective else 0
+        fill["run_recorded_lumi_sum"] += recorded_lumi
+        fill["run_delivered_lumi_sum"] += delivered_lumi
+        if recorded_lumi > _to_float(fill.get("best_run_recorded_lumi")):
+            fill["best_run_number"] = run_number
+            fill["best_run_recorded_lumi"] = recorded_lumi
+            fill["best_run_last_ls"] = last_ls
+            fill["best_run_l1_rate"] = attr.get("l1_rate")
+
+    fill_rows = []
+    for fill in fills.values():
+        fill["runs"].sort(
+            key=lambda item: (
+                not bool(item.get("effective")),
+                -_to_float(item.get("recorded_lumi")),
+                -(item.get("run_number") or 0),
+            )
+        )
+        fill_rows.append(fill)
+
+    fill_rows.sort(
+        key=lambda item: (
+            -_to_float(item.get("run_recorded_lumi_sum")),
+            -(item.get("fill_number") or 0),
+        )
+    )
+    return {
+        "start_year": start_year,
+        "end_year": end_year,
+        "stable_runs_only": bool(stable_runs_only),
+        "fill_count": len(fill_rows),
+        "run_count": run_count,
+        "stable_run_count": stable_run_count,
+        "effective_run_count": effective_run_count,
+        "fills": fill_rows,
+    }
+
+
 def _get_l1_rates_for_path(
     run: int,
     pathname: str,
