@@ -186,6 +186,87 @@ def _write_monitoring_seed_file(seeds):
     tmp_path.replace(path)
 
 
+def _normalize_preset_name(raw_name):
+    name = str(raw_name or "").strip()
+    if not name:
+        raise ValueError("Preset name is required.")
+    if len(name) > 80:
+        raise ValueError("Preset name is too long.")
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_. -]*$", name):
+        raise ValueError("Preset name may contain letters, numbers, spaces, '.', '_', and '-'.")
+    return name
+
+
+def _read_monitoring_seed_presets():
+    path = config.MONITORING_SEED_PRESETS_FILE
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    raw_presets = payload.get("presets", []) if isinstance(payload, dict) else payload
+    if isinstance(raw_presets, dict):
+        raw_presets = [
+            {"name": name, "seeds": seeds}
+            for name, seeds in raw_presets.items()
+        ]
+    if not isinstance(raw_presets, list):
+        return []
+
+    presets = []
+    seen_names = set()
+    for item in raw_presets:
+        if not isinstance(item, dict):
+            continue
+        try:
+            name = _normalize_preset_name(item.get("name"))
+            seeds = _normalize_seed_list(item.get("seeds") or [])
+        except ValueError:
+            continue
+        key = name.lower()
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        presets.append(
+            {
+                "name": name,
+                "count": len(seeds),
+                "seeds": seeds,
+                "updated_at": item.get("updated_at"),
+            }
+        )
+    return sorted(presets, key=lambda preset: preset["name"].lower())
+
+
+def _write_monitoring_seed_presets(presets):
+    clean = []
+    seen_names = set()
+    for item in presets or []:
+        name = _normalize_preset_name(item.get("name"))
+        key = name.lower()
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        seeds = _normalize_seed_list(item.get("seeds") or [])
+        clean.append(
+            {
+                "name": name,
+                "count": len(seeds),
+                "seeds": seeds,
+                "updated_at": item.get("updated_at") or datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+    clean = sorted(clean, key=lambda preset: preset["name"].lower())
+    config.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.MONITORING_SEED_PRESETS_FILE
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps({"presets": clean}, indent=2, sort_keys=True))
+    tmp_path.replace(path)
+    return clean
+
+
 def _default_rate_field(value=None):
     valid_fields = set(config.RATE_FIELD_OPTIONS.values())
     if value in valid_fields:
@@ -580,6 +661,7 @@ def api_config():
             "export_dir": str(config.EXPORT_DIR),
             "projection_settings_path": str(config.PROJECTION_SETTINGS_FILE),
             "dashboard_reference_settings_path": str(config.DASHBOARD_REFERENCE_SETTINGS_FILE),
+            "monitoring_seed_presets_path": str(config.MONITORING_SEED_PRESETS_FILE),
         }
     )
 
@@ -950,6 +1032,78 @@ def api_monitoring_seeds_update():
             "path": str(_monitoring_seed_file()),
             "count": len(seeds),
             "seeds": seeds,
+        }
+    )
+
+
+@app.route("/api/monitoring-seed-presets", methods=["GET"])
+def api_monitoring_seed_presets():
+    presets = _read_monitoring_seed_presets()
+    return jsonify(
+        {
+            "path": str(config.MONITORING_SEED_PRESETS_FILE),
+            "count": len(presets),
+            "presets": presets,
+        }
+    )
+
+
+@app.route("/api/monitoring-seed-presets/<preset_name>", methods=["PUT"])
+def api_monitoring_seed_preset_update(preset_name):
+    payload = request.get_json(silent=True) or {}
+    raw_seeds = payload.get("seeds")
+    if raw_seeds is None and "text" in payload:
+        raw_seeds = str(payload.get("text") or "").splitlines()
+    if not isinstance(raw_seeds, list):
+        return jsonify({"error": "Field 'seeds' must be a list."}), 400
+    try:
+        name = _normalize_preset_name(preset_name)
+        seeds = _normalize_seed_list(raw_seeds)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    updated_at = datetime.now().isoformat(timespec="seconds")
+    preset = {
+        "name": name,
+        "count": len(seeds),
+        "seeds": seeds,
+        "updated_at": updated_at,
+    }
+    presets = [
+        item for item in _read_monitoring_seed_presets()
+        if item["name"].lower() != name.lower()
+    ]
+    presets.append(preset)
+    presets = _write_monitoring_seed_presets(presets)
+    saved = next((item for item in presets if item["name"].lower() == name.lower()), preset)
+    return jsonify(
+        {
+            "status": "saved",
+            "path": str(config.MONITORING_SEED_PRESETS_FILE),
+            "preset": saved,
+            "count": len(presets),
+            "presets": presets,
+        }
+    )
+
+
+@app.route("/api/monitoring-seed-presets/<preset_name>", methods=["DELETE"])
+def api_monitoring_seed_preset_delete(preset_name):
+    try:
+        name = _normalize_preset_name(preset_name)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    presets = [
+        item for item in _read_monitoring_seed_presets()
+        if item["name"].lower() != name.lower()
+    ]
+    presets = _write_monitoring_seed_presets(presets)
+    return jsonify(
+        {
+            "status": "deleted",
+            "path": str(config.MONITORING_SEED_PRESETS_FILE),
+            "count": len(presets),
+            "presets": presets,
         }
     )
 

@@ -20,6 +20,8 @@ const state = {
   availableSeeds: [],
   monitoringSeeds: [],
   monitoringPath: "",
+  monitoringPresets: [],
+  activeMonitoringPreset: "",
   selectedAvailableSeeds: new Set(),
   selectedMonitoringSeeds: new Set(),
   refreshTimer: null,
@@ -413,6 +415,97 @@ async function loadMonitoringSeeds() {
   setMonitoringSeeds(payload.seeds || [], payload.path);
 }
 
+function renderMonitoringPresets() {
+  const select = $("#monitoring-preset-select");
+  const summary = $("#monitoring-preset-summary");
+  if (select) {
+    const current = state.activeMonitoringPreset || select.value || "";
+    select.innerHTML = [
+      `<option value="">No preset</option>`,
+      ...state.monitoringPresets.map((preset) => {
+        const label = `${preset.name} (${preset.count ?? (preset.seeds || []).length})`;
+        return `<option value="${escapeHtml(preset.name)}">${escapeHtml(label)}</option>`;
+      }),
+    ].join("");
+    select.value = state.monitoringPresets.some((preset) => preset.name === current) ? current : "";
+  }
+  const active = state.monitoringPresets.find((preset) => preset.name === state.activeMonitoringPreset);
+  if (summary) {
+    summary.textContent = active
+      ? `${active.name}: ${active.count ?? (active.seeds || []).length} seeds${active.updated_at ? `, updated ${active.updated_at}` : ""}`
+      : `${state.monitoringPresets.length} saved presets`;
+  }
+}
+
+async function loadMonitoringPresets() {
+  const payload = await fetchJson("/api/monitoring-seed-presets");
+  state.monitoringPresets = payload.presets || [];
+  renderMonitoringPresets();
+}
+
+function selectedMonitoringPresetName() {
+  return String(valueOf("#monitoring-preset-select", "") || "").trim();
+}
+
+function monitoringPresetNameInput() {
+  return String(valueOf("#monitoring-preset-name", "") || "").trim();
+}
+
+async function saveMonitoringPreset() {
+  const name = monitoringPresetNameInput() || selectedMonitoringPresetName();
+  if (!name) {
+    toast("Preset name is required.");
+    return;
+  }
+  const payload = await fetchJson(`/api/monitoring-seed-presets/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seeds: state.monitoringSeeds }),
+  });
+  state.monitoringPresets = payload.presets || [];
+  state.activeMonitoringPreset = payload.preset?.name || name;
+  setValue("#monitoring-preset-name", state.activeMonitoringPreset);
+  renderMonitoringPresets();
+  toast(`Saved preset ${state.activeMonitoringPreset}.`);
+}
+
+async function loadSelectedMonitoringPreset() {
+  const name = selectedMonitoringPresetName();
+  if (!name) {
+    toast("Select a preset first.");
+    return;
+  }
+  const preset = state.monitoringPresets.find((item) => item.name === name);
+  if (!preset) {
+    toast(`Preset not found: ${name}`);
+    return;
+  }
+  state.activeMonitoringPreset = preset.name;
+  setValue("#monitoring-preset-name", preset.name);
+  setMonitoringSeeds(preset.seeds || [], state.monitoringPath);
+  await saveMonitoringSeeds({ silent: true });
+  renderMonitoringPresets();
+  toast(`Loaded preset ${preset.name}.`);
+}
+
+async function deleteMonitoringPreset() {
+  const name = selectedMonitoringPresetName() || monitoringPresetNameInput();
+  if (!name) {
+    toast("Select a preset first.");
+    return;
+  }
+  const payload = await fetchJson(`/api/monitoring-seed-presets/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  state.monitoringPresets = payload.presets || [];
+  if (state.activeMonitoringPreset === name) {
+    state.activeMonitoringPreset = "";
+  }
+  setValue("#monitoring-preset-name", "");
+  renderMonitoringPresets();
+  toast(`Deleted preset ${name}.`);
+}
+
 async function loadAvailableSeeds() {
   const params = new URLSearchParams({
     rate_field: valueOf("#rate-field", state.config?.default_rate_field || "pre_dt_before_prescale_rate"),
@@ -421,14 +514,17 @@ async function loadAvailableSeeds() {
   setAvailableSeeds(payload.seeds || []);
 }
 
-async function saveMonitoringSeeds() {
+async function saveMonitoringSeeds(options = {}) {
+  const silent = Boolean(options.silent);
   const payload = await fetchJson("/api/monitoring-seeds", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ seeds: state.monitoringSeeds }),
   });
   setMonitoringSeeds(payload.seeds || [], payload.path);
-  toast(`Saved ${payload.count} monitoring seeds.`);
+  if (!silent) {
+    toast(`Saved ${payload.count} monitoring seeds.`);
+  }
   if (valueOf("#trigger-file").trim() === payload.path) {
     refreshDashboard({ includeRates: true }).catch((error) => toast(error.message));
   }
@@ -483,9 +579,25 @@ function setupMonitoringSeeds() {
     Promise.all([
       loadAvailableSeeds(),
       loadMonitoringSeeds(),
+      loadMonitoringPresets(),
     ]).catch((error) => toast(error.message));
   });
   bind("#monitoring-save", "click", () => saveMonitoringSeeds().catch((error) => toast(error.message)));
+  bind("#monitoring-preset-save", "click", () => saveMonitoringPreset().catch((error) => toast(error.message)));
+  bind("#monitoring-preset-load", "click", () => loadSelectedMonitoringPreset().catch((error) => toast(error.message)));
+  bind("#monitoring-preset-delete", "click", () => deleteMonitoringPreset().catch((error) => toast(error.message)));
+  bind("#monitoring-preset-select", "change", () => {
+    const name = selectedMonitoringPresetName();
+    state.activeMonitoringPreset = name;
+    setValue("#monitoring-preset-name", name);
+    renderMonitoringPresets();
+  });
+  bind("#monitoring-preset-name", "keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveMonitoringPreset().catch((error) => toast(error.message));
+    }
+  });
   bind("#monitoring-add", "click", addMonitoringSeed);
   bind("#monitoring-use", "click", () => setSeedSelection(state.monitoringPath || state.config?.default_trigger_file || "examples/MuonTriggers.txt"));
   bind("#move-to-monitoring", "click", moveSelectedToMonitoring);
@@ -3203,6 +3315,7 @@ async function init() {
     refreshDashboard({ includeRates: false }).catch((error) => toast(error.message));
     loadExports().catch((error) => toast(error.message));
     loadMonitoringSeeds().catch((error) => toast(error.message));
+    loadMonitoringPresets().catch((error) => toast(error.message));
   } catch (error) {
     toast(error.message);
   }

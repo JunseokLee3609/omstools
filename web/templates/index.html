@@ -20,7 +20,7 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=75" />
+    <link rel="stylesheet" href="/static/styles.css?v=76" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   </head>
@@ -711,6 +711,24 @@
               <button id="monitoring-save" class="primary-button" type="button">Save</button>
             </div>
           </div>
+          <div class="seed-preset-manager">
+            <div class="seed-preset-controls">
+              <label>
+                <span>Preset</span>
+                <select id="monitoring-preset-select">
+                  <option value="">No preset</option>
+                </select>
+              </label>
+              <label>
+                <span>Name</span>
+                <input id="monitoring-preset-name" type="text" placeholder="Preset name" />
+              </label>
+              <button id="monitoring-preset-load" class="shell-button" type="button">Load preset</button>
+              <button id="monitoring-preset-save" class="primary-button" type="button">Save preset</button>
+              <button id="monitoring-preset-delete" class="shell-button danger-button" type="button">Delete</button>
+            </div>
+            <div id="monitoring-preset-summary" class="seed-preset-summary">No preset loaded.</div>
+          </div>
           <div class="seed-add-row">
             <input id="monitoring-new-seed" type="text" placeholder="Add seed from available list only" />
             <button id="monitoring-add" class="primary-button" type="button">Add Seed</button>
@@ -762,6 +780,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=88"></script>
+    <script src="/static/app.js?v=89"></script>
   </body>
 </html>

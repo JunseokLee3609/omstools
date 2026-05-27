@@ -7,6 +7,7 @@ EXPORT_DIR = REPO_ROOT / "outcsv" / "web_exports"
 STATE_DIR = REPO_ROOT / "web" / ".state"
 PROJECTION_SETTINGS_FILE = STATE_DIR / "projection_settings.json"
 DASHBOARD_REFERENCE_SETTINGS_FILE = STATE_DIR / "dashboard_reference_settings.json"
+MONITORING_SEED_PRESETS_FILE = STATE_DIR / "monitoring_seed_presets.json"
 
 DEFAULT_TRIGGER_FILE = EXAMPLES_DIR / "MuonTriggers.txt"
 if not DEFAULT_TRIGGER_FILE.exists():
